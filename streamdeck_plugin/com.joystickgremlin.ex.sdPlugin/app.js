@@ -17,8 +17,10 @@ let globalSettings = {
   port: 9020
 };
 
-/** context -> { deviceId, buttonId, page, kind, title, row, column } */
+/** context -> { deviceId, buttonId, kind, action } — currently visible only */
 const instances = {};
+/** Survives page/folder switches so Refresh can push every JG Ex action seen on this deck */
+const knownInstances = {};
 /** Open Property Inspector contexts awaiting connectionStatus */
 const piContexts = {};
 /** deviceId -> { name, type } from registration / deviceDidConnect */
@@ -148,29 +150,28 @@ function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, in
         break;
       case "didReceiveSettings":
         updateInstanceFromSettings(context, device, payload);
-        pushInstanceToGex(context);
+        persistButtonIdIfNeeded(context);
+        // Do not push to GEX here — GEX list updates only on manual Refresh (syncInputs).
         break;
       case "titleParametersDidChange":
-        // Native Stream Deck key title (what the user edits on the key art).
-        if (context) {
-          const prev = instances[context] || { deviceId: device, kind: "button" };
+        // Native Stream Deck title is for key art only — GEX uses Button ID.
+        if (context && payload) {
+          const prev = instances[context] || knownInstances[context] || { deviceId: device, kind: "button" };
           prev.deviceId = device || prev.deviceId;
-          if (payload && payload.title != null) {
-            prev.elgatoTitle = String(payload.title);
-            prev.elgatoTitleUpdated = Date.now();
+          if (payload.settings) {
+            const nextId = resolveButtonId(payload.settings, context, prev);
+            if (nextId !== prev.buttonId) {
+              prev.buttonId = nextId;
+              instances[context] = prev;
+              rememberInstance(context, prev);
+              persistButtonIdIfNeeded(context);
+            } else {
+              instances[context] = prev;
+              rememberInstance(context, prev);
+            }
+          } else {
+            instances[context] = prev;
           }
-          if (payload && payload.settings) {
-            prev.buttonId = resolveButtonId(payload.settings, payload);
-            // Do NOT copy settings.title into titleHint here — it is often stale
-            // relative to payload.title and was blocking live title sync to GEX.
-          }
-          if (payload && payload.coordinates) {
-            prev.row = payload.coordinates.row;
-            prev.column = payload.coordinates.column;
-          }
-          instances[context] = prev;
-          pushInstanceToGex(context);
-          logToElgato("JGEx titleParameters title=" + displayTitle(prev) + " buttonId=" + prev.buttonId);
         }
         break;
       case "didReceiveGlobalSettings":
@@ -218,21 +219,10 @@ function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, in
           setGlobalSettings();
           connectToGex();
         } else if (payload && payload.event === "settingsChanged" && context) {
-          // PI pushes live edits immediately (does not wait for didReceiveSettings).
           updateInstanceFromSettings(context, device, {
-            settings: payload.settings || {},
-            coordinates: payload.coordinates || (instances[context] && {
-              row: instances[context].row,
-              column: instances[context].column
-            }) || {}
+            settings: payload.settings || {}
           });
-          if (payload.elgatoTitle != null && payload.elgatoTitle !== "") {
-            instances[context].elgatoTitle = String(payload.elgatoTitle);
-            instances[context].elgatoTitleUpdated = Date.now();
-          }
-          pushInstanceToGex(context);
-          logToElgato("JGEx PI settingsChanged buttonId=" + (instances[context] && instances[context].buttonId) +
-            " title=" + displayTitle(instances[context]));
+          persistButtonIdIfNeeded(context);
         }
         break;
       default:
@@ -302,8 +292,9 @@ function connectToGex() {
     gexConnected = true;
     broadcastStatus();
     sendToGex({ type: "hello", client: "streamdeck-plugin", version: 1 });
-    // Devices first (friendly Elgato / type names), then key instances.
-    syncAllInstancesToGex();
+    // Announce decks only. Do NOT syncInputs here — that rebuilt every GEX tab at
+    // launch (empty deviceId) and crashed Qt while widgets were still creating.
+    announceDevicesToGex();
   };
 
   gexSocket.onclose = function () {
@@ -369,19 +360,18 @@ function applyVirtualPage(deviceId, page) {
   if (deviceId) {
     devicePage[deviceId] = pageIndex;
   }
-  const label = "P" + (pageIndex + 1);
+  // Do NOT setTitle — titles/icons are Stream Deck cosmetics only. Past Change Page
+  // overlays (P1/P2 / Button ID) ruined custom key art; clear any leftover title text.
   let updated = 0;
   Object.keys(instances).forEach(function (ctx) {
     const inst = instances[ctx];
     if (!inst) return;
     if (deviceId && inst.deviceId && inst.deviceId !== deviceId) return;
-    const base = inst.buttonId || "";
-    const title = label + "\n" + base;
     if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
     websocket.send(JSON.stringify({
       event: "setTitle",
       context: ctx,
-      payload: { title: title, target: 0 }
+      payload: { title: "", target: 0 }
     }));
     if (updated === 0) {
       websocket.send(JSON.stringify({ event: "showOk", context: ctx }));
@@ -411,80 +401,78 @@ function broadcastStatus() {
   });
 }
 
+/** Opaque Button ID: trim + keep letters/digits/_-.: (spaces stripped). */
 function normalizeButtonId(buttonId) {
   if (buttonId == null) return "";
-  let id = String(buttonId).trim();
-  // Legacy coordinate form 0_0 -> 0:0
-  if (id.indexOf("_") >= 0 && id.indexOf(":") < 0) {
-    const parts = id.split("_");
-    if (parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
-      id = parts[0] + ":" + parts[1];
-    }
+  return String(buttonId).trim().replace(/[^A-Za-z0-9\-_.:]/g, "");
+}
+
+function uniqueDefaultButtonId(context) {
+  const ctx = String(context || "").replace(/[^a-zA-Z0-9]/g, "");
+  const suffix = (ctx.slice(0, 6) || Math.random().toString(36).slice(2, 8)).toLowerCase();
+  return "btn-" + suffix;
+}
+
+/** Use settings.buttonId; if empty, generate a unique default (caller persists). */
+function resolveButtonId(settings, context, prev) {
+  const fromSettings = settings && settings.buttonId != null
+    ? normalizeButtonId(settings.buttonId)
+    : "";
+  if (fromSettings) return fromSettings;
+  const fromPrev = prev && prev.buttonId != null
+    ? normalizeButtonId(prev.buttonId)
+    : "";
+  if (fromPrev) return fromPrev;
+  return uniqueDefaultButtonId(context);
+}
+
+function rememberInstance(context, inst) {
+  if (!context || !inst) return;
+  knownInstances[context] = {
+    deviceId: inst.deviceId,
+    buttonId: inst.buttonId,
+    kind: inst.kind || "button",
+    action: inst.action
+  };
+}
+
+function persistButtonIdIfNeeded(context) {
+  const inst = instances[context] || knownInstances[context];
+  if (!inst || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+  let normalized = normalizeButtonId(inst.buttonId);
+  if (!normalized) {
+    normalized = uniqueDefaultButtonId(context);
   }
-  return id;
+  inst.buttonId = normalized;
+  const payload = { buttonId: normalized };
+  try {
+    websocket.send(JSON.stringify({
+      event: "setSettings",
+      context: context,
+      payload: payload
+    }));
+  } catch (e) { /* ignore */ }
+  sendToPropertyInspector(context, inst.action || ACTION_BUTTON, {
+    event: "buttonId",
+    buttonId: normalized
+  });
 }
 
-function resolveButtonId(settings, payload) {
-  if (settings && settings.buttonId) return normalizeButtonId(settings.buttonId);
-  const coords = (payload && payload.coordinates) || {};
-  if (coords.row != null && coords.column != null) {
-    // Match seeded profile IDs (row:col).
-    return String(coords.row) + ":" + String(coords.column);
-  }
-  return "0";
-}
-
-/** 1-based Elgato profile page from action settings (default 1). */
-function resolvePage(settings, prev) {
-  const raw = (settings && settings.page != null && settings.page !== "")
-    ? settings.page
-    : (prev && prev.page != null ? prev.page : 1);
-  const n = parseInt(raw, 10);
-  if (isNaN(n) || n < 1) return 1;
-  if (n > 99) return 99;
-  return n;
-}
-
-/** Title shown in GEX: whichever source was updated most recently. */
-function displayTitle(inst) {
-  if (!inst) return "";
-  const hint = inst.titleHint != null ? String(inst.titleHint) : "";
-  const native = inst.elgatoTitle != null ? String(inst.elgatoTitle) : "";
-  const hintTs = inst.hintUpdated || 0;
-  const nativeTs = inst.elgatoTitleUpdated || 0;
-  if (hint && native) {
-    return (hintTs >= nativeTs) ? hint : native;
-  }
-  if (native) return native;
-  if (hint) return hint;
-  if (inst.title) return String(inst.title);
-  return "";
-}
-
-function pushInstanceToGex(context) {
-  const inst = instances[context];
-  if (!inst || !inst.deviceId) return;
-  const info = deviceInfoById[inst.deviceId] || {};
-  const title = displayTitle(inst);
+function pushInstanceToGex(context, inst) {
+  const data = inst || instances[context] || knownInstances[context];
+  if (!data || !data.deviceId) return;
+  const info = deviceInfoById[data.deviceId] || {};
   sendToGex({
     type: "willAppear",
-    deviceId: inst.deviceId,
-    deviceName: info.name || friendlyDeviceName(info.type, null, inst.deviceId),
+    deviceId: data.deviceId,
+    deviceName: info.name || friendlyDeviceName(info.type, null, data.deviceId),
     deviceType: (info.type !== undefined && info.type !== null) ? info.type : "",
-    buttonId: inst.buttonId,
-    page: resolvePage({ page: inst.page }, inst),
-    kind: inst.kind || "button",
-    title: title,
+    buttonId: data.buttonId,
+    kind: data.kind || "button",
     context: context,
-    row: inst.row,
-    column: inst.column
+    sync: true
   });
-  logToElgato(
-    "JGEx push title=" + title +
-    " page=" + resolvePage({ page: inst.page }, inst) +
-    " buttonId=" + inst.buttonId +
-    " ctx=" + String(context).slice(0, 8)
-  );
+  logToElgato("JGEx sync push buttonId=" + data.buttonId + " ctx=" + String(context).slice(0, 8));
 }
 
 function requestSettings(context) {
@@ -494,62 +482,63 @@ function requestSettings(context) {
   } catch (e) { /* ignore */ }
 }
 
-function syncAllInstancesToGex() {
+function syncAllInstancesToGex(filterDeviceId) {
   announceDevicesToGex();
-  const keys = Object.keys(instances);
-  logToElgato("JGEx syncInputs count=" + keys.length);
-  // Refresh from Elgato first — do NOT push stale cached titles (that was
-  // overwriting newer GEX labels like test3 with older test).
-  keys.forEach(function (ctx) { requestSettings(ctx); });
-  // After settings round-trip, push everything (includes elgatoTitle).
+  // Refresh pushes currently visible keys only. ProfilesV3 on the GEX side
+  // covers other pages/folders. Pushing knownInstances re-created deleted buttons.
+  const list = Object.keys(instances).filter(function (ctx) {
+    const inst = instances[ctx];
+    if (!inst) return false;
+    if (!filterDeviceId) return true;
+    return inst.deviceId === filterDeviceId;
+  });
+  logToElgato("JGEx syncInputs visible=" + list.length + (filterDeviceId ? (" device=" + filterDeviceId) : ""));
+  list.forEach(function (ctx) { requestSettings(ctx); });
   setTimeout(function () {
-    keys.forEach(function (ctx) { pushInstanceToGex(ctx); });
-    sendToGex({ type: "command_ack", command: "syncInputs", ok: true, count: keys.length, phase: "pushed" });
+    list.forEach(function (ctx) {
+      if (instances[ctx]) rememberInstance(ctx, instances[ctx]);
+      persistButtonIdIfNeeded(ctx);
+      pushInstanceToGex(ctx, instances[ctx]);
+    });
+    sendToGex({
+      type: "command_ack",
+      command: "syncInputs",
+      ok: true,
+      count: list.length,
+      phase: "pushed",
+      deviceId: filterDeviceId || ""
+    });
   }, 350);
 }
 
 function updateInstanceFromSettings(context, device, payload) {
-  const settings = payload.settings || {};
-  const coords = payload.coordinates || {};
-  const prev = instances[context] || {};
-  const hasHint = Object.prototype.hasOwnProperty.call(settings, "title");
+  const settings = (payload && payload.settings) || {};
+  const prev = instances[context] || knownInstances[context] || {};
+  const buttonId = normalizeButtonId(resolveButtonId(settings, context, prev));
   const next = {
     deviceId: device || prev.deviceId,
-    buttonId: resolveButtonId(settings, payload),
-    page: resolvePage(settings, prev),
+    buttonId: buttonId,
     kind: prev.kind || "button",
-    titleHint: hasHint ? String(settings.title || "") : (prev.titleHint || ""),
-    titleHintExplicit: hasHint ? true : !!prev.titleHintExplicit,
-    hintUpdated: hasHint ? Date.now() : (prev.hintUpdated || 0),
-    elgatoTitle: prev.elgatoTitle || "",
-    elgatoTitleUpdated: prev.elgatoTitleUpdated || 0,
-    title: hasHint ? String(settings.title || "") : (prev.title || ""),
-    row: (coords.row != null) ? coords.row : prev.row,
-    column: (coords.column != null) ? coords.column : prev.column,
     action: prev.action
   };
   instances[context] = next;
+  rememberInstance(context, next);
 }
 
 function handleWillAppear(context, action, device, payload) {
-  const settings = payload.settings || {};
-  const coords = payload.coordinates || {};
+  const settings = (payload && payload.settings) || {};
   const kind = (action === ACTION_DIAL) ? "dial" : "button";
-  const prev = instances[context] || {};
-  instances[context] = {
+  const prev = instances[context] || knownInstances[context] || {};
+  const buttonId = normalizeButtonId(resolveButtonId(settings, context, prev));
+  const next = {
     deviceId: device,
-    buttonId: resolveButtonId(settings, payload),
-    page: resolvePage(settings, prev),
+    buttonId: buttonId,
     kind: kind,
-    // Seeded profile titles land here but are NOT an explicit PI override.
-    titleHint: (settings.title != null && settings.title !== "") ? String(settings.title) : (prev.titleHint || ""),
-    titleHintExplicit: !!prev.titleHintExplicit,
-    elgatoTitle: prev.elgatoTitle || "",
-    title: (settings.title != null && settings.title !== "") ? String(settings.title) : (prev.title || ""),
-    row: coords.row,
-    column: coords.column,
     action: action
   };
+  instances[context] = next;
+  rememberInstance(context, next);
+  persistButtonIdIfNeeded(context);
   const remembered = rememberDevice(
     device,
     (deviceInfoById[device] && deviceInfoById[device].name) || null,
@@ -562,7 +551,7 @@ function handleWillAppear(context, action, device, payload) {
     name: remembered.name,
     deviceType: (remembered.type !== undefined && remembered.type !== null) ? remembered.type : ""
   });
-  pushInstanceToGex(context);
+  // Do not auto-push inputs to GEX — user clicks Refresh in GEX.
   sendToPropertyInspector(context, action, {
     event: "connectionStatus",
     connected: gexConnected,
@@ -572,33 +561,30 @@ function handleWillAppear(context, action, device, payload) {
 }
 
 function handleWillDisappear(context, device, payload) {
-  const inst = instances[context];
+  const inst = instances[context] || knownInstances[context];
   if (inst) {
     sendToGex({
       type: "willDisappear",
       deviceId: device,
       buttonId: inst.buttonId,
-      page: resolvePage({ page: inst.page }, inst),
       kind: inst.kind,
       context: context
     });
   }
+  // Drop both maps. Page/folder coverage for Refresh comes from ProfilesV3 in GEX;
+  // keeping knownInstances after delete re-added removed buttons on Refresh.
   delete instances[context];
+  delete knownInstances[context];
 }
 
 function instancePayload(context, device, payload, kind) {
   const settings = (payload && payload.settings) || {};
-  const coords = (payload && payload.coordinates) || {};
-  const inst = instances[context] || {};
+  const inst = instances[context] || knownInstances[context] || {};
   return {
     deviceId: device,
-    buttonId: inst.buttonId || resolveButtonId(settings, payload || {}),
-    page: resolvePage(settings, inst),
+    buttonId: inst.buttonId || resolveButtonId(settings, context, inst),
     kind: kind || inst.kind || "button",
-    title: displayTitle(inst) || settings.title || "",
-    context: context,
-    row: coords.row != null ? coords.row : inst.row,
-    column: coords.column != null ? coords.column : inst.column
+    context: context
   };
 }
 
@@ -619,12 +605,16 @@ function handleDialRotate(context, device, payload) {
 }
 
 function findContextByButton(deviceId, buttonId) {
-  const keys = Object.keys(instances);
-  for (let i = 0; i < keys.length; i++) {
-    const ctx = keys[i];
-    const inst = instances[ctx];
-    if (inst.deviceId === deviceId && String(inst.buttonId) === String(buttonId)) {
-      return ctx;
+  const want = normalizeButtonId(buttonId);
+  const pools = [instances, knownInstances];
+  for (let p = 0; p < pools.length; p++) {
+    const keys = Object.keys(pools[p]);
+    for (let i = 0; i < keys.length; i++) {
+      const ctx = keys[i];
+      const inst = pools[p][ctx];
+      if (inst.deviceId === deviceId && normalizeButtonId(inst.buttonId) === want) {
+        return ctx;
+      }
     }
   }
   return null;
@@ -720,7 +710,7 @@ function handleGexMessage(data) {
     case "syncInputs":
     case "refresh":
       // GEX Refresh — getSettings first, then push (see syncAllInstancesToGex).
-      syncAllInstancesToGex();
+      syncAllInstancesToGex(deviceId || "");
       break;
     case "setTitle":
       if (!context) return;
@@ -729,12 +719,6 @@ function handleGexMessage(data) {
         context: context,
         payload: { title: data.title || "", target: 0 }
       }));
-      // Keep our cache / GEX list in sync with what we just set.
-      if (instances[context]) {
-        instances[context].elgatoTitle = data.title || "";
-        instances[context].elgatoTitleUpdated = Date.now();
-        pushInstanceToGex(context);
-      }
       break;
     case "setImage":
       if (!context) return;

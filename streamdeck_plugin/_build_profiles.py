@@ -11,7 +11,18 @@ PROFILES_DIR = ROOT / "profiles"
 PROFILES_DIR.mkdir(exist_ok=True)
 
 BUTTON_UUID = "com.joystickgremlin.ex.button"
-PLUGIN_VERSION = "1.0.16"
+PLUGIN_VERSION = "1.0.21"
+
+
+def default_button_id(page: int = 1, row: int = 1, col: int = 1) -> str:
+    """Unique freeform Button ID string for seeded keys (not a structured schema)."""
+    return f"p{int(page)}-r{int(row)}-c{int(col)}"
+
+
+def button_settings(button_id: str = None) -> dict:
+    """Settings store only the opaque buttonId string."""
+    return {"buttonId": button_id or default_button_id()}
+
 
 # Elgato DeviceType -> package / grid / DeviceModel for AutoInstall profiles.
 # Pages live inside each profile — never one profile per page.
@@ -59,10 +70,17 @@ DEVICE_SPECS = {
 }
 
 
-def _button_action(col: int, row: int, title: str, page: int = 1) -> dict:
+def build_page_actions(cols: int, rows: int, page: int = 1) -> dict:
+    """Minimal starter layout: one JG Ex Button at top-left (0,0)."""
+    _ = (cols, rows)  # grid size kept for DeviceModel packaging only
+    bid = default_button_id(page, 1, 1)
+    return {"0,0": _button_action(0, 0, "JG Ex", button_id=bid)}
+
+
+def _button_action(col: int, row: int, title: str, button_id: str = None) -> dict:
     return {
         "Name": "JG Ex Button",
-        "Settings": {"buttonId": f"{row}:{col}", "page": int(page), "title": title},
+        "Settings": button_settings(button_id or default_button_id(1, row + 1, col + 1)),
         "State": 0,
         "States": [{
             "FFamily": "", "FSize": "12", "FStyle": "", "FUnderline": "off",
@@ -71,19 +89,6 @@ def _button_action(col: int, row: int, title: str, page: int = 1) -> dict:
         }],
         "UUID": BUTTON_UUID,
     }
-
-
-def build_page_actions(cols: int, rows: int, page: int = 1) -> dict:
-    actions = {}
-    for r in range(rows):
-        for c in range(cols):
-            actions[f"{c},{r}"] = _button_action(c, r, f"{r}:{c}", page=page)
-    # Brand marker on a stable key when the grid is large enough.
-    if cols > 1:
-        actions["1,0"] = _button_action(1, 0, "JG Ex", page=page)
-    else:
-        actions["0,0"] = _button_action(0, 0, "JG Ex", page=page)
-    return actions
 
 
 def build_legacy_profile(spec_key: str):
@@ -106,9 +111,8 @@ def build_legacy_profile(spec_key: str):
         "Version": "1.0",
     }
     (sd / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
-    for c in range(cols):
-        for r in range(rows):
-            (sd / f"{c},{r}").mkdir(exist_ok=True)
+    # Only the single starter key needs a folder; Elgato fills empty slots.
+    (sd / "0,0").mkdir(exist_ok=True)
 
     out = PROFILES_DIR / f"{out_name}.streamDeckProfile"
     if out.exists():
@@ -121,7 +125,7 @@ def build_legacy_profile(spec_key: str):
             else:
                 zf.write(path, rel)
     shutil.rmtree(staging.parent, ignore_errors=True)
-    print(f"Wrote {out.name} ({out.stat().st_size} bytes) '{display_name}' model={device_model}")
+    print(f"Wrote {out.name} ({out.stat().st_size} bytes) '{display_name}' model={device_model} (1 button)")
 
 
 def patch_plugin_manifest():
@@ -183,14 +187,13 @@ def _find_connected_device_uuids() -> dict[str, tuple[str, str]]:
     return found
 
 
-def seed_profile_for_spec(spec_key: str, device_model: str, device_uuid: str, num_pages: int = 5):
-    """Install one multi-page JG Ex profile into ProfilesV3 for a connected device."""
+def seed_profile_for_spec(spec_key: str, device_model: str, device_uuid: str, num_pages: int = 1):
+    """Install a minimal JG Ex profile (default: 1 page, 1 button) into ProfilesV3."""
     prefs = Path.home() / "AppData/Roaming/Elgato/StreamDeck/ProfilesV3"
     if not prefs.exists():
         raise SystemExit("ProfilesV3 missing")
 
     spec = DEVICE_SPECS[spec_key]
-    cols, rows = spec["grid"]
     profile_id = str(uuid.uuid4()).upper()
     root = prefs / f"{profile_id}.sdProfile"
     pages_root = root / "Profiles"
@@ -198,38 +201,30 @@ def seed_profile_for_spec(spec_key: str, device_model: str, device_uuid: str, nu
     page_ids = [str(uuid.uuid4()) for _ in range(num_pages)]
 
     def v3_actions(page_index: int) -> dict:
-        actions = {}
-        for r in range(rows):
-            for c in range(cols):
-                title = f"P{page_index + 1}\n{r}:{c}"
-                actions[f"{c},{r}"] = {
-                    "ActionID": str(uuid.uuid4()),
-                    "LinkedTitle": True,
-                    "Name": "JG Ex Button",
-                    "Plugin": {
-                        "Name": "Joystick Gremlin Ex",
-                        "UUID": "com.joystickgremlin.ex",
-                        "Version": PLUGIN_VERSION,
-                    },
-                    "Resources": None,
-                    "Settings": {
-                        "buttonId": f"{r}:{c}",
-                        "page": page_index + 1,
-                        "title": title,
-                    },
-                    "State": 0,
-                    "States": [{
-                        "FontFamily": "", "FontSize": 12, "FontStyle": "",
-                        "FontUnderline": False, "OutlineThickness": 2,
-                        "ShowTitle": True, "Title": title,
-                        "TitleAlignment": "middle", "TitleColor": "#ffffff",
-                    }],
-                    "UUID": BUTTON_UUID,
-                }
-        marker = "1,0" if cols > 1 else "0,0"
-        actions[marker]["States"][0]["Title"] = f"JG Ex\nPage {page_index + 1}"
-        actions[marker]["Settings"]["title"] = f"JG Ex\nPage {page_index + 1}"
-        return actions
+        page = page_index + 1
+        button_id = default_button_id(page, 1, 1)
+        return {
+            "0,0": {
+                "ActionID": str(uuid.uuid4()),
+                "LinkedTitle": True,
+                "Name": "JG Ex Button",
+                "Plugin": {
+                    "Name": "Joystick Gremlin Ex",
+                    "UUID": "com.joystickgremlin.ex",
+                    "Version": PLUGIN_VERSION,
+                },
+                "Resources": None,
+                "Settings": button_settings(button_id),
+                "State": 0,
+                "States": [{
+                    "FontFamily": "", "FontSize": 12, "FontStyle": "",
+                    "FontUnderline": False, "OutlineThickness": 2,
+                    "ShowTitle": True, "Title": "JG Ex",
+                    "TitleAlignment": "middle", "TitleColor": "#ffffff",
+                }],
+                "UUID": BUTTON_UUID,
+            }
+        }
 
     for i, pid in enumerate(page_ids):
         pdir = pages_root / pid.upper()
@@ -258,11 +253,11 @@ def seed_profile_for_spec(spec_key: str, device_model: str, device_uuid: str, nu
     (root / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
     print(
         f"Seeded '{spec['display_name']}' ({spec_key}) model={device_model} "
-        f"pages={num_pages} ({root.name})"
+        f"pages={num_pages} buttons=1 ({root.name})"
     )
 
 
-def seed_connected_profiles(num_pages: int = 5):
+def seed_connected_profiles(num_pages: int = 1):
     """Seed JG Ex profiles for every supported device type currently present."""
     connected = _find_connected_device_uuids()
     if not connected:
@@ -274,7 +269,7 @@ def seed_connected_profiles(num_pages: int = 5):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pages", type=int, default=5, help="Pages inside each seeded JG Ex profile")
+    parser.add_argument("--pages", type=int, default=1, help="Pages inside each seeded JG Ex profile")
     parser.add_argument("--seed", action="store_true", help="Install JG Ex profiles into ProfilesV3 for connected decks")
     args = parser.parse_args()
     n = max(1, int(args.pages))

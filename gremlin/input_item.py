@@ -5638,38 +5638,51 @@ class AbstractAction(BaseProfileData):
 
     def input_is_button(self):
         """true if the input is a button"""
-        is_button = False
+        # Prefer effective / override type first. StreamDeck / OSC / MIDI / State
+        # store raw input_type as their device class but override to JoystickButton
+        # so button-oriented actions (Macro execute flags, VJoy sync, etc.) work.
+        try:
+            effective = self.hardware_input_type
+        except Exception:
+            effective = None
+        if effective == InputType.JoystickButton:
+            return True
+        if effective in (InputType.JoystickAxis, InputType.JoystickHat):
+            return False
+
         input_item = self.input_item
-        input_type = input_item.input_type
-
-        # check hat first
-        hardware_input_type = self.hardware_raw_input_type
-
-        if not input_type:
-            if hasattr(self.parent_container, "get_input_type"):
-                input_type = self.parent_container.get_input_type()  # container override input type
-
-        if input_type:
-            return input_type == InputType.JoystickButton
-
-        if hardware_input_type == InputType.JoystickHat:
+        if input_item is None:
             return False
 
         if hasattr(input_item, "is_button"):
-            is_button = input_item.is_button
-            return is_button
+            return bool(input_item.is_button)
 
-        if hasattr(self, "hardware_input_type"):
-            input_type: InputType = self.hardware_input_type
-            return input_type == InputType.JoystickButton
+        raw = input_item.input_type
+        if raw == InputType.JoystickButton:
+            return True
+        if raw in (InputType.JoystickAxis, InputType.JoystickHat):
+            return False
+        if raw in (
+            InputType.Keyboard,
+            InputType.KeyboardLatched,
+            InputType.Mouse,
+            InputType.StreamDeck,
+            InputType.OpenSoundControl,
+            InputType.Midi,
+            InputType.State,
+            InputType.ModeControl,
+            InputType.OctaviIfr1,
+            InputType.VirtualButton,
+        ):
+            return True
 
         if hasattr(self.hardware_input_id, "is_button"):
-            is_button = self.hardware_input_id.is_button
+            return bool(self.hardware_input_id.is_button)
 
         if hasattr(self.hardware_input_id, "is_axis"):
-            is_button = not self.hardware_input_id.is_axis
+            return not self.hardware_input_id.is_axis
 
-        return is_button
+        return False
 
     def input_is_hardware(self):
         """true if the device is a hardware input device"""

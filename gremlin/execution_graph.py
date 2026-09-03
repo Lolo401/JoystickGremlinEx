@@ -1237,6 +1237,10 @@ class ExecutionContext:
                         if condition and container:
                             if isinstance(condition, gremlin.input_item.BaseActivationCondition):
                                 functor = self._create_activation_condition(condition, container, True)
+                            elif isinstance(condition, gremlin.input_item.AbstractCondition):
+                                # Already a runtime functor (e.g. VirtualButtonCondition
+                                # attached for axis/hat virtual buttons) — do not convert again.
+                                functor = condition
                             else:
                                 functor = self._convert_condition(condition)
                             logtabs = gremlin.shared_state.logTabs()
@@ -2243,7 +2247,10 @@ class ContainerCallback:
             InputType.State,
             InputType.OctaviIfr1,
         ]:
-            value = gremlin.actions.Value(event.is_pressed)
+            # Explicit is_pressed so Value.is_pressed works even if callers pass
+            # float event.value (1.0/0.0) into other Value() construction paths.
+            pressed = bool(event.is_pressed)
+            value = gremlin.actions.Value(pressed, is_pressed=pressed)
         else:
             raise gremlin.error.GremlinError("Invalid event type")
 

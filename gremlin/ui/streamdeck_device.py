@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from PySide6 import QtCore, QtWidgets, QtWebSockets, QtNetwork
@@ -98,66 +101,43 @@ def friendly_streamdeck_name(name: str = None, device_type=None, device_id: str 
     return "Stream Deck"
 
 
-def normalize_button_id(button_id: str) -> str:
-    """Normalize legacy coordinate IDs (0_0 -> 0:0)."""
+_BUTTON_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9\-_.:]")
+
+
+def normalize_button_id(button_id: str, page=None, row=None, column=None) -> str:
+    """Opaque freeform Button ID: trim and keep letters/digits/_-.: only.
+
+    Spaces and other characters are stripped so ProfilesV3 import and live
+    plugin sync always produce the same identity (e.g. 'test 2' → 'test2').
+    Legacy Px:Ry:Cz strings remain valid (colon/digits kept).
+    page/row/column args are ignored (call-site compatibility).
+    """
+    _ = (page, row, column)
     if button_id is None:
         return ""
-    button_id = str(button_id).strip()
-    if not button_id:
+    text = str(button_id).strip()
+    if not text:
         return ""
-    if "_" in button_id and ":" not in button_id:
-        parts = button_id.split("_")
-        if len(parts) == 2 and all(p.isdigit() for p in parts):
-            return f"{parts[0]}:{parts[1]}"
-    return button_id
+    cleaned = _BUTTON_ID_SAFE_RE.sub("", text)
+    return cleaned
 
 
-def normalize_page(page) -> int:
-    """1-based Elgato profile page; missing/invalid values become page 1 (legacy)."""
-    try:
-        n = int(page)
-    except (TypeError, ValueError):
-        return 1
-    if n < 1:
-        return 1
-    if n > 99:
-        return 99
-    return n
+# Alias — same rules as normalize_button_id.
+sanitize_button_id = normalize_button_id
 
 
-def make_input_key(kind: str, button_id: str, device_id: str = "", page=1) -> str:
-    """Stable config / message key: deviceId:kind:p{page}:buttonId."""
+def make_input_key(kind: str, button_id: str, device_id: str = "") -> str:
+    """Stable config / message key: deviceId:kind:buttonId."""
     kind = kind or "button"
     button_id = normalize_button_id(button_id)
-    page = normalize_page(page)
     device_id = str(device_id) if device_id else ""
     if device_id:
-        return f"{device_id}:{kind}:p{page}:{button_id}"
-    return f"{kind}:p{page}:{button_id}"
+        return f"{device_id}:{kind}:{button_id}"
+    return f"{kind}:{button_id}"
 
 
-def _coords_tuple(item_or_meta) -> tuple | None:
-    if isinstance(item_or_meta, dict):
-        row, column = item_or_meta.get("row"), item_or_meta.get("column")
-    else:
-        row = getattr(item_or_meta, "_row", None)
-        column = getattr(item_or_meta, "_column", None)
-    if row is None or column is None:
-        return None
-    try:
-        return (int(row), int(column))
-    except (TypeError, ValueError):
-        return None
-
-
-def _page_of(item_or_meta) -> int:
-    if isinstance(item_or_meta, dict):
-        return normalize_page(item_or_meta.get("page", 1))
-    return normalize_page(getattr(item_or_meta, "page", 1))
-
-
-def _same_physical_streamdeck_key(a, b) -> bool:
-    """True if two inputs / metas refer to the same page + plugin key/dial slot."""
+def _same_streamdeck_input(a, b) -> bool:
+    """True if two inputs / metas share device + kind + Button ID."""
     a_ctx = (a.get("context") if isinstance(a, dict) else getattr(a, "context", "")) or ""
     b_ctx = (b.get("context") if isinstance(b, dict) else getattr(b, "context", "")) or ""
     if a_ctx and b_ctx and a_ctx == b_ctx:
@@ -168,10 +148,151 @@ def _same_physical_streamdeck_key(a, b) -> bool:
     b_kind = (b.get("kind") if isinstance(b, dict) else getattr(b, "kind", "button")) or "button"
     if a_dev != b_dev or a_kind != b_kind:
         return False
-    if _page_of(a) != _page_of(b):
-        return False
-    ca, cb = _coords_tuple(a), _coords_tuple(b)
-    return ca is not None and ca == cb
+    a_bid = normalize_button_id(
+        (a.get("button_id") if isinstance(a, dict) else getattr(a, "button_id", "")) or ""
+    )
+    b_bid = normalize_button_id(
+        (b.get("button_id") if isinstance(b, dict) else getattr(b, "button_id", "")) or ""
+    )
+    return bool(a_bid) and a_bid == b_bid
+
+
+# Back-compat alias for older call sites.
+_same_physical_streamdeck_key = _same_streamdeck_input
+
+
+def _coerce_streamdeck_device_type(device_type=None, device_name: str = None):
+    """Normalize Elgato DeviceType; fall back to friendly name hints."""
+    try:
+        if device_type is not None and str(device_type).strip() != "":
+            return int(device_type)
+    except (TypeError, ValueError):
+        pass
+    name = (device_name or "").casefold()
+    if "xl" in name:
+        return 2
+    if "neo" in name:
+        return 9
+    if "mini" in name:
+        return 1
+    if "plus" in name or name.endswith("+") or "stream deck +" in name:
+        return 7
+    if "stream deck" in name:
+        return 0
+    return None
+
+
+JGEX_ACTION_KINDS = {
+    "com.joystickgremlin.ex.button": "button",
+    "com.joystickgremlin.ex.dial": "dial",
+}
+
+# Elgato DeviceType -> models used by our seeded ProfilesV3 packages.
+_STREAMDECK_TYPE_MODELS = {
+    0: ("20GAA9901", "20GBA9901", "20GBA9902"),
+    1: ("20GAI9901", "20GBA9903"),
+    2: ("20GAT9902", "20GAT9901"),
+    7: ("20GBD9901", "10GBD9901"),
+    9: ("20GEA9901", "20GDH9901"),
+}
+
+
+def _profiles_v3_root() -> Path:
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(appdata) / "Elgato" / "StreamDeck" / "ProfilesV3"
+
+
+def import_jgex_inputs_from_profiles_v3(device_id: str, device_type=None) -> list[dict]:
+    """Read all JG Ex Button/Dial actions from ProfilesV3 (every page/folder)."""
+    root = _profiles_v3_root()
+    if not root.is_dir() or not device_id:
+        return []
+
+    try:
+        type_i = _coerce_streamdeck_device_type(device_type)
+    except Exception:
+        type_i = None
+    models = set(_STREAMDECK_TYPE_MODELS.get(type_i, ()))
+    # Without a device-type → model filter we would import EVERY JG Ex profile
+    # (XL+Plus+…) into one tab and crash the UI. Refuse that.
+    if not models:
+        syslog.warning(
+            "STREAMDECK: ProfilesV3 import skipped — unknown device type "
+            f"for device {device_id!r} (type={device_type!r})"
+        )
+        return []
+
+    candidates = []
+    for folder in root.glob("*.sdProfile"):
+        try:
+            man = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        name = man.get("Name") or ""
+        pre = man.get("PreconfiguredName") or ""
+        installed = man.get("InstalledByPluginUUID") or ""
+        if (
+            installed != "com.joystickgremlin.ex"
+            and not name.startswith("JG Ex")
+            and not str(pre).startswith("profiles/jgex")
+        ):
+            continue
+        dev = man.get("Device") or {}
+        model = dev.get("Model") or ""
+        if model not in models:
+            continue
+        try:
+            mtime = folder.stat().st_mtime
+        except OSError:
+            mtime = 0
+        candidates.append((mtime, folder, man))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _mtime, folder, man = candidates[0]
+
+    results = []
+    profiles_root = folder / "Profiles"
+    if not profiles_root.is_dir():
+        return []
+
+    # Walk every Profiles/* folder — top-level pages AND nested Stream Deck folders.
+    # Pages.Pages alone misses folder contents (openchild ProfileUUID dirs).
+    page_dirs = sorted(
+        [p for p in profiles_root.iterdir() if p.is_dir()],
+        key=lambda p: p.name.upper(),
+    )
+    for page_dir in page_dirs:
+        page_manifest = page_dir / "manifest.json"
+        if not page_manifest.is_file():
+            continue
+        try:
+            pdata = json.loads(page_manifest.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        controllers = pdata.get("Controllers") or []
+        for controller in controllers:
+            actions = controller.get("Actions") or {}
+            for _pos_key, action in actions.items():
+                if not isinstance(action, dict):
+                    continue
+                action_uuid = action.get("UUID") or ""
+                kind = JGEX_ACTION_KINDS.get(action_uuid)
+                if not kind:
+                    continue
+                settings = action.get("Settings") or {}
+                button_id = sanitize_button_id(settings.get("buttonId") or "")
+                if not button_id:
+                    continue
+                results.append({
+                    "device_id": device_id,
+                    "button_id": button_id,
+                    "kind": kind,
+                    "context": "",
+                })
+    return results
+
 
 def ensure_streamdeck_special_device(device_id: str, name: str = None, device_type=None):
     """Ensure a special DeviceType.StreamDeck exists for this Elgato deviceId."""
@@ -256,12 +377,8 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
         # Fields used by display_name / setters — must exist before InputItem.__init__ runs.
         self._elgato_device_id = ""
         self._button_id = ""
-        self._page = 1  # 1-based Elgato profile page (legacy = 1)
         self._kind = "button"  # button | dial | dial_press
-        self._title = ""
         self._context = ""
-        self._row = None
-        self._column = None
 
         # Prefer the hosting device node GUID (per-deck); fall back to legacy tab GUID.
         if device_guid is None and mode_object is not None and getattr(mode_object, "parent", None) is not None:
@@ -292,20 +409,12 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
 
     @property
     def message_key(self) -> str:
-        return make_input_key(self._kind, self._button_id, self._elgato_device_id, self._page)
+        return make_input_key(self._kind, self._button_id, self._elgato_device_id)
 
     @property
     def sortKey(self):
-        """Keep grid order stable when Button ID / title change (avoid keys 'vanishing' off-screen)."""
-        try:
-            row = int(self._row) if self._row is not None else 999
-        except (TypeError, ValueError):
-            row = 999
-        try:
-            col = int(self._column) if self._column is not None else 999
-        except (TypeError, ValueError):
-            col = 999
-        return (normalize_page(self._page), row, col, str(self._button_id or ""), str(self._kind or ""))
+        """Alphabetical by Button ID (case-insensitive), then kind."""
+        return (str(self._button_id or "").casefold(), str(self._kind or ""))
 
     @property
     def device_id(self) -> str:
@@ -322,14 +431,7 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
     @button_id.setter
     def button_id(self, value: str):
         self._button_id = normalize_button_id(value)
-
-    @property
-    def page(self) -> int:
-        return normalize_page(self._page)
-
-    @page.setter
-    def page(self, value):
-        self._page = normalize_page(value)
+        self.description = self.display_name
 
     @property
     def kind(self) -> str:
@@ -338,15 +440,6 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
     @kind.setter
     def kind(self, value: str):
         self._kind = value or "button"
-
-    @property
-    def title(self) -> str:
-        return self._title
-
-    @title.setter
-    def title(self, value: str):
-        self._title = value or ""
-        self.description = self.display_name
 
     @property
     def context(self) -> str:
@@ -358,17 +451,8 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
 
     @property
     def display_name(self) -> str:
-        prefix = f"P{self.page} · "
-        if self._title:
-            return prefix + self._title
-        if self._kind == "dial":
-            return f"{prefix}Dial {self._button_id}"
-        if self._kind == "dial_press":
-            return f"{prefix}Dial Press {self._button_id}"
-        coords = ""
-        if self._row is not None and self._column is not None:
-            coords = f" (R{self._row}C{self._column})"
-        return f"{prefix}Button {self._button_id}{coords}"
+        """Button ID is the only label that matters."""
+        return self._button_id or "(unassigned)"
 
     def parse_xml(self, node, data=None, extra_data=None):
         if node.tag != "input":
@@ -379,14 +463,10 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
             self.setId(read_guid(node, "guid"))
         self._elgato_device_id = safe_read(node, "device-id", str, "")
         self._kind = safe_read(node, "kind", str, "button")
-        self.button_id = safe_read(node, "button-id", str, "")
-        self.page = safe_read(node, "page", int, 1) if "page" in node.attrib else 1
-        self.title = safe_read(node, "title", str, "")
+        # Freeform identity: button-id as opaque string. Ignore legacy page/row/column attrs.
+        raw_button = safe_read(node, "button-id", str, "")
+        self.button_id = normalize_button_id(raw_button)
         self._context = safe_read(node, "context", str, "")
-        if "row" in node.attrib:
-            self._row = safe_read(node, "row", int, 0)
-        if "column" in node.attrib:
-            self._column = safe_read(node, "column", int, 0)
         self.setOverrideInputType(InputType.JoystickButton)
         if self._elgato_device_id:
             ensure_streamdeck_special_device(self._elgato_device_id)
@@ -405,14 +485,8 @@ class StreamDeckInputItem(gremlin.input_item.InputItem):
         node.set("guid", str(self.id))
         node.set("device-id", self._elgato_device_id or "")
         node.set("button-id", self._button_id or "")
-        node.set("page", str(self.page))
         node.set("kind", self._kind or "button")
-        node.set("title", self._title or "")
         node.set("context", self._context or "")
-        if self._row is not None:
-            node.set("row", str(self._row))
-        if self._column is not None:
-            node.set("column", str(self._column))
         super().to_xml(node)
         return node
     def __hash__(self):
@@ -447,7 +521,7 @@ class StreamDeckBridge(QtCore.QObject):
         self._plugin_connected = False
         # device_id -> {name, type, guid}
         self._devices: dict[str, dict] = {}
-        # (device_id, kind, page, button_id) -> metadata incl. context
+        # (device_id, kind, button_id) -> metadata incl. context
         self._live_inputs: dict[tuple, dict] = {}
         self._autorelease_timers: dict[tuple, threading.Timer] = {}
 
@@ -486,6 +560,13 @@ class StreamDeckBridge(QtCore.QObject):
 
     def live_inputs_for_device(self, device_id: str) -> list[dict]:
         return [meta for (did, *_rest), meta in self._live_inputs.items() if did == device_id]
+
+    def clear_live_inputs_for_device(self, device_id: str):
+        if not device_id:
+            self._live_inputs.clear()
+            return
+        for key in [k for k in self._live_inputs if k[0] == device_id]:
+            self._live_inputs.pop(key, None)
 
     def start(self, port: int = None):
         config = gremlin.config.Configuration()
@@ -603,9 +684,9 @@ class StreamDeckBridge(QtCore.QObject):
     def change_page(self, device_id: str, page: int, profile: str) -> bool:
         """Live Change Page — no Stream Deck restart or window close.
 
-        Sends changePage to the plugin. The plugin updates key titles for the
-        active virtual page and attempts Elgato switchToProfile when the editor
-        is already closed (Elgato blocks that API while the editor is open).
+        Sends changePage to the plugin. The plugin attempts Elgato switchToProfile
+        when the editor is already closed (Elgato blocks that API while the editor
+        is open). Key titles/icons are left alone — Stream Deck cosmetics only.
         """
         try:
             page_i = int(page)
@@ -639,6 +720,15 @@ class StreamDeckBridge(QtCore.QObject):
             self._send(sock, {"type": "status", "connected": True})
         elif msg_type == "command_ack":
             syslog.info(f"STREAMDECK: plugin ack {data}")
+            if data.get("command") in ("syncInputs", "refresh") and data.get("phase") == "pushed":
+                # Manual Refresh finished — notify only the requesting deck.
+                # Empty deviceId used to mean "all tabs" and crashed Qt at launch.
+                device_id = str(data.get("deviceId") or data.get("device") or "")
+                if not device_id:
+                    syslog.info("STREAMDECK: ignoring syncInputs ack without deviceId")
+                else:
+                    guid = self._profile_device_guid(device_id)
+                    self.inputs_changed.emit(guid)
         elif msg_type == "ping":
             self._send(sock, {"type": "pong"})
         elif msg_type == "device":
@@ -676,7 +766,42 @@ class StreamDeckBridge(QtCore.QObject):
         return ""
 
     def _request_tab_refresh(self):
-        """Rebuild device tabs without a full DINPUT rescan."""
+        """Rebuild device tabs so connected Stream Deck decks appear/hide.
+
+        Debounced and deferred until the main UI exists. Immediate rebuilds
+        during profile/tab construction raced Qt and caused launch AVs; a
+        single delayed refresh after plugin announce is safe and required
+        because tabs are filtered by is_guid_connected().
+        """
+        if getattr(self, "_tab_refresh_timer", None) is None:
+            self._tab_refresh_timer = QtCore.QTimer(self)
+            self._tab_refresh_timer.setSingleShot(True)
+            self._tab_refresh_timer.timeout.connect(self._emit_tab_refresh)
+        ui = getattr(gremlin.shared_state, "ui", None)
+        # Wait longer if the main window is not up yet (plugin often connects
+        # during / just after first tab build).
+        self._tab_refresh_timer.start(2000 if ui is None else 800)
+
+    def _emit_tab_refresh(self):
+        ui = getattr(gremlin.shared_state, "ui", None)
+        profile = getattr(gremlin.shared_state, "current_profile", None)
+        if ui is None or profile is None:
+            # UI still coming up — try again shortly.
+            if getattr(self, "_tab_refresh_timer", None) is not None:
+                self._tab_refresh_timer.start(1500)
+            return
+        try:
+            if gremlin.shared_state.is_redraw_suspended():
+                self._tab_refresh_timer.start(1000)
+                return
+        except Exception:
+            pass
+        try:
+            if getattr(ui, "_suspend_ui_update", False):
+                self._tab_refresh_timer.start(1000)
+                return
+        except Exception:
+            pass
         try:
             el = gremlin.event_handler.EventListener()
             el.refresh_devices.emit()
@@ -708,9 +833,13 @@ class StreamDeckBridge(QtCore.QObject):
                 "guid": guid,
             }
             self.devices_changed.emit()
-            # Only rebuild tabs when a deck appears or its display name changes.
-            if previous is None or previous.get("name") != name:
+            if previous is None:
                 self._migrate_legacy_inputs_for_device(device_id)
+                # Tabs are hidden until is_guid_connected — refresh once (debounced)
+                # after the plugin announces so decks appear without Options toggle.
+                self._request_tab_refresh()
+            elif previous.get("name") != name:
+                # Friendly name upgrade — refresh so the tab label updates.
                 self._request_tab_refresh()
             if gremlin.config.Configuration().verbose_mode_streamdeck:
                 syslog.info(f"STREAMDECK: device {name} ({device_id})")
@@ -748,46 +877,33 @@ class StreamDeckBridge(QtCore.QObject):
             )
         context = str(data.get("context") or "")
         button_id = normalize_button_id(button_id)
-        page = normalize_page(data.get("page", 1))
         meta = {
             "device_id": device_id,
             "button_id": button_id,
-            "page": page,
             "kind": kind,
-            "title": data.get("title") if data.get("title") is not None else "",
             "context": context,
-            "row": data.get("row"),
-            "column": data.get("column"),
         }
-        # Drop any prior live entry for this plugin context / same page + grid slot.
+        # Drop any prior live entry for this plugin context / same Button ID.
         for old_key, old_meta in list(self._live_inputs.items()):
             if _same_physical_streamdeck_key(old_meta, meta):
                 self._live_inputs.pop(old_key, None)
-        key = (device_id, kind, page, button_id)
+        key = (device_id, kind, button_id)
         self._live_inputs[key] = meta
-        guid = self._profile_device_guid(device_id)
-        try:
-            self._ensure_profile_input(meta)
-        except Exception as err:
-            syslog.error(f"STREAMDECK: failed to register input {meta}: {err}")
-            import traceback
-
-            syslog.error(traceback.format_exc())
-        self.inputs_changed.emit(guid)
+        # Live tracking only — profile/UI updates happen on manual Refresh (syncInputs).
+        # Creating inputs here made the UI unusable when many keys appeared.
 
     def _handle_will_disappear(self, data: dict):
         device_id = str(data.get("deviceId") or data.get("device") or "")
         button_id = normalize_button_id(str(data.get("buttonId") or ""))
         kind = data.get("kind") or "button"
-        page = normalize_page(data.get("page", 1))
         context = str(data.get("context") or "")
         if context:
             for old_key, old_meta in list(self._live_inputs.items()):
                 if old_meta.get("context") == context:
                     self._live_inputs.pop(old_key, None)
         else:
-            self._live_inputs.pop((device_id, kind, page, button_id), None)
-        self.inputs_changed.emit(self._profile_device_guid(device_id))
+            self._live_inputs.pop((device_id, kind, button_id), None)
+        # Do not refresh the UI list on disappear — manual Refresh owns the list.
 
     def _migrate_legacy_inputs_for_device(self, device_id: str):
         """Move inputs stored under the legacy tab GUID onto this deck's GUID."""
@@ -844,42 +960,53 @@ class StreamDeckBridge(QtCore.QObject):
             syslog.info(f"STREAMDECK: migrated {len(to_move)} legacy input(s) -> {device_id}")
 
     def _find_existing_streamdeck_input(self, config: dict, meta: dict, input_key: str):
-        """Locate an existing input by key, plugin context, page + coords, or Button ID."""
+        """Locate an existing input by key, plugin context, or Button ID."""
         item = config.get(input_key)
         if item is not None:
             return item, input_key
 
-        # Pre-page keys were device:kind:buttonId (implicit page 1).
-        page = normalize_page(meta.get("page", 1))
-        if page == 1:
-            device_id = meta.get("device_id") or ""
-            kind = meta.get("kind") or "button"
-            button_id = normalize_button_id(meta.get("button_id") or "")
-            legacy_key = f"{device_id}:{kind}:{button_id}" if device_id else f"{kind}:{button_id}"
+        meta_button = normalize_button_id(meta.get("button_id") or "")
+        meta_dev = meta.get("device_id") or ""
+        meta_kind = meta.get("kind") or "button"
+
+        # Legacy config keys from page-scoped / P/R/C eras.
+        device_id = meta_dev
+        kind = meta_kind
+        legacy_candidates = []
+        if meta_button:
+            legacy_candidates.extend([
+                f"{device_id}:{kind}:p1:{meta_button}" if device_id else f"{kind}:p1:{meta_button}",
+                f"{device_id}:{kind}:{meta_button}" if device_id else f"{kind}:{meta_button}",
+                f"{kind}:{meta_button}",
+            ])
+        for legacy_key in legacy_candidates:
             legacy = config.get(legacy_key)
             if isinstance(legacy, StreamDeckInputItem):
                 return legacy, legacy_key
 
-        meta_button = normalize_button_id(meta.get("button_id") or "")
-        meta_dev = meta.get("device_id") or ""
-        meta_kind = meta.get("kind") or "button"
         for existing_key, existing in list(config.items()):
             if not isinstance(existing, StreamDeckInputItem):
                 continue
             if _same_physical_streamdeck_key(existing, meta):
                 return existing, existing_key
-            # Dials / items without coordinates: match page + Button ID.
+            # Config is already per physical deck GUID — Button ID + kind is enough.
+            # Stored device_id may be blank while live events include Elgato deviceId.
+            if (
+                (existing.kind or "button") == meta_kind
+                and normalize_button_id(existing.button_id) == meta_button
+                and meta_button
+            ):
+                return existing, existing_key
             if (
                 (existing.device_id or "") == meta_dev
                 and (existing.kind or "button") == meta_kind
-                and existing.page == page
                 and normalize_button_id(existing.button_id) == meta_button
             ):
                 return existing, existing_key
         return None, input_key
 
     def _pick_duplicate_keeper(self, group: list, prefer_meta: dict = None):
-        """Choose which duplicate to keep; prefer live Button ID, mappings, then title."""
+        """Choose which duplicate to keep; prefer live Button ID, then mappings."""
         prefer_button = normalize_button_id((prefer_meta or {}).get("button_id") or "")
 
         def score(pair):
@@ -894,21 +1021,16 @@ class StreamDeckBridge(QtCore.QObject):
                 except Exception:
                     if item.containers:
                         s += 40
-            if item.title:
-                s += 20
             if item.context:
                 s += 10
-            bid = normalize_button_id(item.button_id)
-            if ":" in bid:
+            if normalize_button_id(item.button_id):
                 s += 5
-            if "_" in str(item.button_id or ""):
-                s -= 5
             return s
 
         return max(group, key=score)
 
     def _prune_duplicate_streamdeck_inputs(self, config: dict, prefer_meta: dict = None) -> int:
-        """Collapse multiple profile entries for the same physical key/dial."""
+        """Collapse multiple profile entries for the same Button ID."""
         entries = [(k, v) for k, v in list(config.items()) if isinstance(v, StreamDeckInputItem)]
         if len(entries) < 2:
             return 0
@@ -931,27 +1053,16 @@ class StreamDeckBridge(QtCore.QObject):
 
             keep_key, keeper = self._pick_duplicate_keeper(group, prefer_meta)
             if prefer_meta:
-                # Align keeper with the live plugin values.
                 if prefer_meta.get("button_id"):
                     keeper.button_id = normalize_button_id(prefer_meta["button_id"])
                 if prefer_meta.get("kind"):
                     keeper.kind = prefer_meta["kind"]
-                if "page" in prefer_meta:
-                    keeper.page = prefer_meta.get("page")
-                # Plugin is source of truth for the label shown in the list.
-                if "title" in prefer_meta:
-                    keeper.title = prefer_meta.get("title") or ""
                 if prefer_meta.get("context"):
                     keeper.context = prefer_meta["context"]
-                if prefer_meta.get("row") is not None:
-                    keeper._row = prefer_meta.get("row")
-                if prefer_meta.get("column") is not None:
-                    keeper._column = prefer_meta.get("column")
 
             for old_key, old_item in group:
                 if old_item is keeper:
                     continue
-                # Never collapse distinct pages; and keep mapped containers when possible.
                 try:
                     if (not keeper.containers) and old_item.containers:
                         keeper.containers = list(old_item.containers)
@@ -961,7 +1072,7 @@ class StreamDeckBridge(QtCore.QObject):
                 removed += 1
                 syslog.info(
                     f"STREAMDECK: pruned duplicate input {old_key!r} "
-                    f"(kept page={keeper.page} buttonId={keeper.button_id!r} title={keeper.title!r})"
+                    f"(kept buttonId={keeper.button_id!r})"
                 )
 
             new_key = keeper.message_key
@@ -970,94 +1081,91 @@ class StreamDeckBridge(QtCore.QObject):
             config[new_key] = keeper
         return removed
 
-    def _ensure_profile_input(self, meta: dict):
+    def _ensure_profile_input(
+        self,
+        meta: dict,
+        *,
+        prune: bool = True,
+        migrate_legacy: bool = True,
+        log_create: bool = True,
+        allow_create: bool = True,
+    ):
         profile = gremlin.shared_state.current_profile
         if not profile:
             return None
-        mode = gremlin.shared_state.edit_mode or gremlin.shared_state.current_mode
+        # Prefer runtime/edit via current_mode — never force edit_mode while running.
+        mode = gremlin.shared_state.current_mode
+        if not mode:
+            mode = gremlin.shared_state.edit_mode or gremlin.shared_state.runtime_mode
         if not mode:
             return None
         device_id = meta.get("device_id") or ""
         meta = dict(meta)
         meta["button_id"] = normalize_button_id(meta.get("button_id") or "")
-        meta["page"] = normalize_page(meta.get("page", 1))
         ensure_streamdeck_special_device(device_id, self._devices.get(device_id, {}).get("name"))
         device_guid = self._profile_device_guid(device_id)
         device_node = profile.getDeviceNode(device_guid, autocreate=True)
         mode_object = device_node.ensure_mode_exists(mode)
         input_type = InputType.StreamDeck
-        input_key = make_input_key(meta["kind"], meta["button_id"], device_id, meta["page"])
+        input_key = make_input_key(meta["kind"], meta["button_id"], device_id)
         config = mode_object.getConfig(input_type)
         context = meta.get("context") or ""
 
-        # Drop stale duplicates for this page + physical key before upserting.
-        self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
+        if prune and allow_create:
+            self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
 
         item, found_key = self._find_existing_streamdeck_input(config, meta, input_key)
         if item is not None and found_key != input_key:
             config.pop(found_key, None)
 
-        if item is None:
-            # Prefer an existing legacy entry with the same key (migrate in place).
+        if item is None and migrate_legacy:
             self._migrate_legacy_inputs_for_device(device_id)
             config = mode_object.getConfig(input_type)
-            self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
+            if prune and allow_create:
+                self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
             item, found_key = self._find_existing_streamdeck_input(config, meta, input_key)
             if item is not None and found_key != input_key:
                 config.pop(found_key, None)
 
-        new_title = meta.get("title") if "title" in meta else None
         if item is None:
+            if not allow_create:
+                return None
             item = StreamDeckInputItem(mode_object=mode_object, device_guid=device_guid)
             item.device_id = device_id
             item.kind = meta["kind"]
             item.button_id = meta["button_id"]
-            item.page = meta["page"]
-            item.title = new_title or ""
             item.context = context
-            item._row = meta.get("row")
-            item._column = meta.get("column")
             item.setOverrideInputType(InputType.JoystickButton)
             mode_object.addInputItem(item)
             profile.registry.registerInputItem(item)
-            syslog.info(
-                f"STREAMDECK: created input title={item.display_name!r} "
-                f"page={item.page} buttonId={item.button_id!r} key={item.message_key}"
-            )
+            if log_create:
+                syslog.info(
+                    f"STREAMDECK: created input buttonId={item.button_id!r} key={item.message_key}"
+                )
         else:
             if isinstance(item, StreamDeckInputItem):
-                old_title = item.title
                 old_button = item.button_id
-                old_page = item.page
                 item.button_id = meta["button_id"]
-                item.page = meta["page"]
                 item.kind = meta["kind"]
-                # Always take the plugin title when provided (source of truth).
-                if new_title is not None:
-                    item.title = new_title or ""
+                if device_id and not item.device_id:
+                    item.device_id = device_id
                 if context:
                     item.context = context
-                item._row = meta.get("row")
-                item._column = meta.get("column")
-                # Ensure config is keyed by the current message_key.
-                config[input_key] = item
-                if old_title != item.title or old_button != item.button_id or old_page != item.page:
+                if log_create and old_button != item.button_id:
                     syslog.info(
-                        f"STREAMDECK: updated input title={item.title!r} "
-                        f"page={item.page} buttonId={item.button_id!r} "
-                        f"(was page={old_page} title={old_title!r} buttonId={old_button!r})"
+                        f"STREAMDECK: updated input buttonId={item.button_id!r} "
+                        f"(was {old_button!r})"
                     )
-                elif new_title is not None:
-                    # Title forced equal after prune — still log when plugin asserts a value.
-                    syslog.info(
-                        f"STREAMDECK: sync title={item.title!r} "
-                        f"page={item.page} buttonId={item.button_id!r}"
-                    )
+
+            if prune and allow_create:
+                self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
+            # Re-key after identity updates.
+            new_key = item.message_key
+            if found_key != new_key:
+                config.pop(found_key, None)
+            config[new_key] = item
             if hasattr(item, "setOverrideInputType"):
                 item.setOverrideInputType(InputType.JoystickButton)
-
-        # Final sweep in case create + old orphans both remain.
-        self._prune_duplicate_streamdeck_inputs(config, prefer_meta=meta)
         return config.get(item.message_key, item)
 
     def _handle_key(self, data: dict, is_pressed: bool):
@@ -1069,20 +1177,30 @@ class StreamDeckBridge(QtCore.QObject):
         guid = self._profile_device_guid(device_id)
         meta = {
             "device_id": device_id,
-            "button_id": button_id,
-            "page": normalize_page(data.get("page", 1)),
+            "button_id": normalize_button_id(button_id),
             "kind": kind,
-            "title": data.get("title") or "",
             "context": data.get("context") or "",
-            "row": data.get("row"),
-            "column": data.get("column"),
         }
         try:
-            item = self._ensure_profile_input(meta)
+            # While the profile is running, only resolve existing mapped inputs.
+            # Creating a blank duplicate here broke callback lookup (macros never fired).
+            running = bool(getattr(gremlin.shared_state, "is_running", False))
+            item = self._ensure_profile_input(
+                meta,
+                prune=not running,
+                migrate_legacy=not running,
+                log_create=not running,
+                allow_create=not running,
+            )
         except Exception as err:
             syslog.error(f"STREAMDECK: key ensure input failed: {err}")
             item = None
         if item is None:
+            if gremlin.config.Configuration().verbose_mode_streamdeck:
+                syslog.info(
+                    f"STREAMDECK: no mapped input for buttonId={meta['button_id']!r} "
+                    f"device={device_id[:12]} (press ignored)"
+                )
             return
         event = gremlin.event_handler.Event(
             InputType.StreamDeck,
@@ -1105,21 +1223,29 @@ class StreamDeckBridge(QtCore.QObject):
             return
         direction = "inc" if ticks > 0 else "dec"
         input_kind = "dial"
-        page = normalize_page(data.get("page", 1))
         guid = self._profile_device_guid(device_id)
+        base_id = normalize_button_id(button_id)
+        # Suffix the user Button ID: MyDial:inc / MyDial:dec
+        if base_id.endswith(f":{direction}"):
+            dial_id = base_id
+        else:
+            dial_id = f"{base_id}:{direction}"
         meta = {
             "device_id": device_id,
-            "button_id": f"{button_id}:{direction}",
-            "page": page,
+            "button_id": dial_id,
             "kind": input_kind,
-            "title": data.get("title") or f"Dial {button_id} {direction.upper()}",
             "context": data.get("context") or "",
-            "row": None,
-            "column": None,
         }
-        self._live_inputs[(device_id, input_kind, page, meta["button_id"])] = meta
+        self._live_inputs[(device_id, input_kind, dial_id)] = meta
         try:
-            item = self._ensure_profile_input(meta)
+            running = bool(getattr(gremlin.shared_state, "is_running", False))
+            item = self._ensure_profile_input(
+                meta,
+                prune=not running,
+                migrate_legacy=not running,
+                log_create=False,
+                allow_create=not running,
+            )
         except Exception as err:
             syslog.error(f"STREAMDECK: dial ensure input failed: {err}")
             return
@@ -1139,7 +1265,7 @@ class StreamDeckBridge(QtCore.QObject):
         event.source = EventSourceType.StreamDeck
         self._emit_event(event)
 
-        key = (device_id, input_kind, page, meta["button_id"])
+        key = (device_id, input_kind, dial_id)
         delay = gremlin.config.Configuration().osc_default_autorelease_delay
 
         def _release(k=key, g=guid, iid=item):
@@ -1163,7 +1289,7 @@ class StreamDeckBridge(QtCore.QObject):
         self._autorelease_timers[key] = timer
         timer.daemon = True
         timer.start()
-        self.inputs_changed.emit(guid)
+        # No inputs_changed here — avoid redrawing the tab on every dial tick.
 
     def _emit_event(self, event: gremlin.event_handler.Event):
         """Dispatch a Stream Deck input event (OSC-style).
@@ -1231,6 +1357,12 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         self.widget_storage = {}
         self._is_legacy_tab = compare_guid(self.device_guid, gremlin.shared_state.streamdeck_tab_guid)
         self._elgato_device_id = "" if self._is_legacy_tab else StreamDeckBridge().device_id_for_guid(self.device_guid)
+        self._refresh_busy = False
+        self._refresh_pending = False
+        self._refresh_generation = 0
+        self._refresh_applied_generation = 0
+        self._refresh_user_requested = False
+        self._ui_list_ready = False
 
         self.inputItemListModel = StreamDeckInputItemListModel(
             profile=profile,
@@ -1246,14 +1378,14 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         # Banner + Refresh: Stream Deck software owns the keys; GEX list can lag
         # after add/remove/move of JG Ex Button / Dial actions.
         banner = gremlin.ui.ui_common.QInfoBox(
-            "After adding, removing, or reassigning <b>JG Ex Button</b> / <b>JG Ex Dial</b> "
-            "actions in Stream Deck software, click <b>Refresh</b> to update this input list."
+            "Click <b>Refresh</b> after adding, removing, or editing <b>JG Ex Button</b> / "
+            "<b>JG Ex Dial</b> actions in Stream Deck software. The list is not updated automatically."
         )
         self.addLeftPanelHeaderWidget(banner)
 
         refresh_btn = gremlin.ui.ui_common.Buttons.getRefreshWidget(
             "Refresh",
-            tooltip="Reload Stream Deck inputs from the connected plugin",
+            tooltip="Reload Stream Deck inputs from the connected plugin (manual)",
             callback=self._handle_refresh_clicked,
         )
         status = QtWidgets.QLabel()
@@ -1275,7 +1407,8 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
             )
         else:
             hint_text = (
-                f"Bridge: ws://127.0.0.1:{port} — place JG Ex Button / Dial actions on this deck"
+                f"Bridge: ws://127.0.0.1:{port} — JG Ex Button / Dial actions only. "
+                "Use Refresh to sync the list from Stream Deck."
             )
         hint = QtWidgets.QLabel(hint_text)
         hint.setWordWrap(True)
@@ -1295,21 +1428,230 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         el.unlock_inputs.connect(self._handle_unlock_inputs)
 
     def _handle_refresh_clicked(self):
-        """Ask the plugin for a fresh snapshot, then reload this deck's input list."""
+        """Ask the plugin for a fresh snapshot, then rebuild this deck's input list once."""
+        if not getattr(self, "_ui_list_ready", False):
+            syslog.info("STREAMDECK: ignoring Refresh — input list not ready yet")
+            return
         ensure_bridge_started()
         self._refresh_status_label()
         bridge = StreamDeckBridge()
-        # Plugin re-fetches Elgato settings, then pushes titles after a short delay.
-        bridge.send_command("syncInputs", deviceId=self._elgato_device_id or "")
-        # Apply when the delayed plugin push arrives (and once more as a safety net).
-        QtCore.QTimer.singleShot(500, self._refresh_after_plugin_sync)
-        QtCore.QTimer.singleShot(900, self._refresh_after_plugin_sync)
+        device_id = self._elgato_device_id or ""
+        syslog.info(f"STREAMDECK: Refresh clicked deviceId={device_id!r}")
+        # Do not clear live inputs here — that raced the plugin re-push and made
+        # folder buttons look "missing" until a second Refresh. Snapshot replace
+        # happens inside ensureInputItems after ProfilesV3 + live are merged.
+        self._refresh_user_requested = True
+        self._refresh_generation += 1
+        generation = self._refresh_generation
+        bridge.send_command("syncInputs", deviceId=device_id)
+        # Fallback if command_ack is missed; primary path is inputs_changed from ack.
+        QtCore.QTimer.singleShot(
+            900,
+            lambda g=generation: self._refresh_after_plugin_sync(from_timer=True, generation=g),
+        )
 
-    def _refresh_after_plugin_sync(self):
+    def _collect_refresh_snapshot(self) -> tuple[str, dict]:
+        """Return (device_id, by_button) from ProfilesV3 + currently visible live keys."""
+        bridge = StreamDeckBridge()
+        device_id = self._elgato_device_id or bridge.device_id_for_guid(self.device_guid)
+        device_info = bridge.devices.get(device_id, {}) if device_id else {}
+        live_metas = bridge.live_inputs_for_device(device_id) if device_id else []
+        profile_metas = []
+        if device_id:
+            try:
+                dtype = _coerce_streamdeck_device_type(
+                    device_info.get("type"), device_info.get("name")
+                )
+                profile_metas = import_jgex_inputs_from_profiles_v3(device_id, dtype)
+            except Exception as err:
+                syslog.error(f"STREAMDECK: ProfilesV3 import failed: {err}")
+                import traceback
+                syslog.error(traceback.format_exc())
+        by_button = {}
+        for meta in profile_metas + live_metas:
+            bid = normalize_button_id(meta.get("button_id") or "")
+            if not bid:
+                continue
+            meta = dict(meta)
+            meta["button_id"] = bid
+            if not meta.get("device_id"):
+                meta["device_id"] = device_id
+            key = (meta.get("kind") or "button", bid)
+            by_button[key] = meta
+        return device_id or "", by_button
+
+    def _list_stale_streamdeck_inputs(self, device_id: str, keep: set) -> list:
+        """Profile inputs on this deck that are not in the refresh snapshot."""
+        current_mode = gremlin.shared_state.edit_mode
+        mode_object = self.device_node.ensure_mode_exists(current_mode)
+        config = mode_object.getConfig(InputType.StreamDeck)
+        stale = []
+        for item in list(config.values()):
+            if not isinstance(item, StreamDeckInputItem):
+                continue
+            item_dev = item.device_id or ""
+            if device_id and item_dev and item_dev != device_id:
+                continue
+            ident = (item.kind or "button", normalize_button_id(item.button_id))
+            if ident not in keep:
+                stale.append(item)
+        return stale
+
+    @staticmethod
+    def _streamdeck_item_has_mappings(item) -> bool:
+        try:
+            if hasattr(item, "hasActions") and item.hasActions:
+                return True
+        except Exception:
+            pass
+        return bool(getattr(item, "containers", None))
+
+    def _confirm_remove_stale_inputs(self, stale: list) -> bool:
+        """Ask before deleting profile buttons that no longer exist on the deck."""
+        if not stale:
+            return True
+        mapped = [i for i in stale if self._streamdeck_item_has_mappings(i)]
+        lines = []
+        for item in stale[:25]:
+            name = item.display_name or item.button_id or "(unnamed)"
+            if self._streamdeck_item_has_mappings(item):
+                lines.append(f"• {name}  — has mappings (will be deleted)")
+            else:
+                lines.append(f"• {name}")
+        if len(stale) > 25:
+            lines.append(f"… and {len(stale) - 25} more")
+        prompt = (
+            f"{len(stale)} button(s) in this GEX profile are no longer on the Stream Deck."
+        )
+        if mapped:
+            prompt += (
+                f"\n{len(mapped)} of them have mappings that will be permanently removed."
+            )
+        prompt += "\n\nRemove the missing buttons from the profile?"
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Remove missing Stream Deck buttons")
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        box.setText(prompt)
+        box.setInformativeText("\n".join(lines))
+        box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+        return box.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+    def _clear_mapping_panel_after_refresh(self, keep: set, removed_items: list):
+        """Blank the right-hand mapping UI if the selected input was removed."""
+        selected = getattr(self, "_last_selected_input_item", None)
+        if selected is None:
+            return
+        removed_ids = {id(i) for i in removed_items}
+        must_blank = False
+        if id(selected) in removed_ids:
+            must_blank = True
+        elif isinstance(selected, StreamDeckInputItem):
+            ident = (selected.kind or "button", normalize_button_id(selected.button_id))
+            if ident not in keep:
+                must_blank = True
+        if not must_blank:
+            try:
+                if isinstance(selected, StreamDeckInputItem):
+                    self.selectInputItem(selected, force=True, emit=True)
+                    return
+            except Exception:
+                must_blank = True
+        if must_blank:
+            try:
+                if hasattr(self, "inputItemListView") and self.inputItemListView is not None:
+                    self.inputItemListView.clearSelection(emit=False)
+            except Exception:
+                pass
+            try:
+                self._blank_input()
+            except Exception as err:
+                syslog.error(f"STREAMDECK: failed to blank mapping panel: {err}")
+            self._last_selected_input_item = None
+            self._last_selected_widget = None
+            self._input_item_mapping_widget = None
+
+    def _refresh_after_plugin_sync(self, from_timer: bool = False, generation: int = None):
         if not Shiboken.isValid(self):
             return
-        self.ensureInputItems(refresh=True)
-        self._redraw_input_list()
+        # Destructive list rebuild is manual-Refresh only (never at plugin connect / launch).
+        if not getattr(self, "_refresh_user_requested", False):
+            return
+        if not getattr(self, "_ui_list_ready", False):
+            return
+        # Ignore stale timer callbacks after a newer Refresh or after ack already applied.
+        if generation is None:
+            generation = self._refresh_generation
+        if generation <= 0:
+            return
+        if from_timer and generation != self._refresh_generation:
+            return
+        if from_timer and self._refresh_applied_generation >= generation:
+            return
+        if self._refresh_busy:
+            self._refresh_pending = True
+            return
+        self._refresh_busy = True
+        self._refresh_pending = False
+        try:
+            if self._is_legacy_tab:
+                return
+
+            device_id, by_button = self._collect_refresh_snapshot()
+            keep = set(by_button.keys())
+            stale = self._list_stale_streamdeck_inputs(device_id, keep)
+
+            # Confirm before deleting missing buttons (especially those with mappings).
+            # Do this while the old list is still visible.
+            if stale and not self._confirm_remove_stale_inputs(stale):
+                syslog.info(
+                    f"STREAMDECK: refresh cancelled by user "
+                    f"({len(stale)} missing button(s) kept)"
+                )
+                self._refresh_applied_generation = generation
+                return
+
+            # Detach list widgets BEFORE mutating/removing profile inputs.
+            self.setUpdatesEnabled(False)
+            model = getattr(self, "inputItemListModel", None)
+            if model is not None:
+                try:
+                    model.clear(emit=False)
+                except Exception:
+                    pass
+            self._redraw_input_list()
+
+            self.ensureInputItems(
+                refresh=False,
+                sync_from_live=True,
+                update_ui=False,
+                snapshot=by_button,
+                remove_stale=True,
+            )
+
+            if model is not None:
+                try:
+                    self._load_handler(model, emit=True)
+                except Exception as err:
+                    syslog.error(f"STREAMDECK: refresh reload failed: {err}")
+            self._redraw_input_list()
+            self._clear_mapping_panel_after_refresh(keep, stale)
+            self._refresh_applied_generation = generation
+        except Exception as err:
+            syslog.error(f"STREAMDECK: refresh failed: {err}")
+            import traceback
+            syslog.error(traceback.format_exc())
+        finally:
+            if Shiboken.isValid(self):
+                self.setUpdatesEnabled(True)
+            self._refresh_busy = False
+            if self._refresh_pending:
+                self._refresh_pending = False
+                QtCore.QTimer.singleShot(0, self._refresh_after_plugin_sync)
+            elif self._refresh_applied_generation >= self._refresh_generation:
+                self._refresh_user_requested = False
 
     def _redraw_input_list(self):
         if hasattr(self, "inputItemListView") and self.inputItemListView is not None:
@@ -1365,7 +1707,10 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         return 0
 
     def onInputListViewCreated(self):
-        self.ensureInputItems(refresh=True)
+        # Show existing profile mappings only — do not auto-import / auto-refresh.
+        # Full sync is manual Refresh (auto-sync at plugin connect caused launch crashes).
+        self._ui_list_ready = True
+        self.ensureInputItems(refresh=True, sync_from_live=False, update_ui=True)
 
     def _refresh_status_label(self):
         if Shiboken.isValid(self._status_label):
@@ -1381,10 +1726,25 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
             self._status_label.setText(text if text else message)
 
     def _on_inputs_changed(self, device_guid):
-        if compare_guid(device_guid, self.device_guid):
-            gremlin.util.InvokeUiMethod(self.ensureInputItems, True)
+        # Only rebuild the matching deck tab after a user-clicked Refresh.
+        if not getattr(self, "_refresh_user_requested", False):
+            return
+        if device_guid is None:
+            return
+        if not compare_guid(device_guid, self.device_guid):
+            return
+        if self._is_legacy_tab:
+            return
+        gremlin.util.InvokeUiMethod(self._refresh_after_plugin_sync)
 
-    def ensureInputItems(self, refresh=False):
+    def ensureInputItems(
+        self,
+        refresh=False,
+        sync_from_live=False,
+        update_ui=True,
+        snapshot: dict = None,
+        remove_stale: bool = True,
+    ):
         current_mode = gremlin.shared_state.edit_mode
         mode_object = self.device_node.ensure_mode_exists(current_mode)
         config = mode_object.getConfig(InputType.StreamDeck)
@@ -1393,40 +1753,84 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         changed = False
         # Legacy tab is read-only for auto-create; new inputs go to per-device tabs.
         if self._is_legacy_tab:
-            if refresh:
+            if refresh and update_ui:
                 self.inputItemListModel.refresh()
             return False
 
-        device_id = self._elgato_device_id or bridge.device_id_for_guid(self.device_guid)
-        live_metas = bridge.live_inputs_for_device(device_id) if device_id else []
-        for meta in live_metas:
-            input_key = make_input_key(
-                meta["kind"],
-                meta["button_id"],
-                meta.get("device_id") or "",
-                meta.get("page", 1),
-            )
-            existing = config.get(input_key)
-            prior_title = existing.title if isinstance(existing, StreamDeckInputItem) else None
-            try:
-                item = bridge._ensure_profile_input(meta)
-            except Exception as err:
-                syslog.error(f"STREAMDECK: ensureInputItems failed for {input_key}: {err}")
-                continue
-            if item is None:
-                continue
-            if existing is None or (
-                isinstance(item, StreamDeckInputItem) and item.title != prior_title
-            ):
+        if sync_from_live:
+            if snapshot is not None:
+                device_id = self._elgato_device_id or bridge.device_id_for_guid(self.device_guid) or ""
+                by_button = dict(snapshot)
+            else:
+                device_id, by_button = self._collect_refresh_snapshot()
+
+            # Replace live cache for this deck with the refresh snapshot only.
+            if device_id:
+                bridge.clear_live_inputs_for_device(device_id)
+            for meta in by_button.values():
+                bid = meta["button_id"]
+                kind = meta.get("kind") or "button"
+                bridge._live_inputs[(device_id, kind, bid)] = meta
+
+            for meta in by_button.values():
+                try:
+                    item = bridge._ensure_profile_input(
+                        meta,
+                        prune=False,
+                        migrate_legacy=False,
+                        log_create=False,
+                    )
+                except Exception as err:
+                    input_key = make_input_key(
+                        meta.get("kind") or "button",
+                        meta.get("button_id") or "",
+                        meta.get("device_id") or "",
+                    )
+                    syslog.error(f"STREAMDECK: ensureInputItems failed for {input_key}: {err}")
+                    continue
+                if item is None:
+                    continue
                 changed = True
 
-        # Collapse leftover orphans from older Button ID formats (same page + coords only).
-        pruned = bridge._prune_duplicate_streamdeck_inputs(config)
-        if pruned:
-            changed = True
-            syslog.info(f"STREAMDECK: pruned {pruned} duplicate input(s) on refresh")
+            removed = 0
+            if remove_stale:
+                # Drop profile inputs that are no longer on the deck (stale Button IDs).
+                # Only pop from the mode config — do not call removeInputItem while UI may hold refs.
+                keep = set(by_button.keys())
+                for cfg_key, item in list(config.items()):
+                    if not isinstance(item, StreamDeckInputItem):
+                        continue
+                    item_dev = item.device_id or ""
+                    if device_id and item_dev and item_dev != device_id:
+                        continue
+                    ident = (item.kind or "button", normalize_button_id(item.button_id))
+                    if ident in keep:
+                        if normalize_button_id(item.button_id) != item.button_id:
+                            item.button_id = normalize_button_id(item.button_id)
+                        continue
+                    config.pop(cfg_key, None)
+                    mk = getattr(item, "message_key", None)
+                    if mk and mk in config:
+                        config.pop(mk, None)
+                    removed += 1
+                    syslog.info(
+                        f"STREAMDECK: refresh removed stale input "
+                        f"buttonId={item.button_id!r} kind={item.kind!r}"
+                    )
+                if removed:
+                    changed = True
+                    syslog.info(f"STREAMDECK: refresh removed {removed} stale input(s)")
 
-        if changed or refresh:
+            pruned = bridge._prune_duplicate_streamdeck_inputs(config)
+            if pruned:
+                changed = True
+                syslog.info(f"STREAMDECK: pruned {pruned} duplicate input(s) on refresh")
+            syslog.info(
+                f"STREAMDECK: refresh snapshot {len(by_button)} input(s) "
+                f"removed={removed}"
+            )
+
+        if update_ui and (changed or refresh):
             self.inputItemListModel.refresh()
         return changed
 
@@ -1452,9 +1856,11 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
             item = data.input_item if hasattr(data, "input_item") else data
         if isinstance(item, StreamDeckInputItem):
             input_widget.setTitle(item.display_name)
-            input_widget.setInputDescription(
-                f"Page {item.page} · ID {item.button_id} ({item.kind})"
-            )
+            input_widget.setInputDescription(f"Button ID ({item.kind})")
+            try:
+                item.description = item.display_name
+            except Exception:
+                pass
         elif item is not None:
             input_widget.setTitle(str(getattr(item, "display_name", getattr(item, "input_id", item))))
 

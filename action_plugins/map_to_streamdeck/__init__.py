@@ -127,9 +127,10 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
 
         note = QtWidgets.QLabel(
             "Use the single <b>JG Ex XL</b> profile (pages stay pages inside that profile). "
-            "Change Page updates key titles live over the plugin bridge and asks Elgato "
-            "to switch to that page index. It does not create one profile per page, "
-            "and does not restart or close Stream Deck."
+            "Change Page switches the Elgato profile page over the plugin bridge "
+            "(Stream Deck software may block that while its editor is open). "
+            "It does not overwrite key titles/icons, create one profile per page, "
+            "or restart / close Stream Deck."
         )
         note.setWordWrap(True)
         self.main_layout.addWidget(note)
@@ -222,8 +223,8 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
                 title="Map to Stream Deck",
                 prompt=(
                     "Change Page sent.\n\n"
-                    "JG Ex Button keys should update to P1 / P2 / … titles "
-                    "and one key flashes OK. Stream Deck is not closed or restarted.\n\n"
+                    "One key flashes OK. Stream Deck is not closed or restarted, "
+                    "and key titles/icons are not overwritten.\n\n"
                     "Be on profile JG Ex XL with JG Ex Button actions visible."
                 ),
             )
@@ -286,10 +287,15 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
 
         cmd = self.action_data.command or "changePage"
         device_id = self.action_data.device_id or ""
-        # Prefer the device that actually sent this Stream Deck event.
-        ident = event.identifier
-        if hasattr(ident, "device_id") and ident.device_id:
-            device_id = ident.device_id
+        # Only Stream Deck events carry an Elgato deviceId on the identifier.
+        # State/Joystick/etc. InputItem.device_id is the GEX device string (e.g.
+        # state tab GUID 72bbc0f4…) — using that here sent changePage to a
+        # non-deck and made State-triggered Change Page appear broken.
+        if event.event_type == InputType.StreamDeck:
+            ident = event.identifier
+            elgato_id = getattr(ident, "device_id", None) or getattr(ident, "_elgato_device_id", None)
+            if elgato_id and elgato_id in bridge.devices:
+                device_id = elgato_id
         if not device_id:
             devices = bridge.devices
             if len(devices) == 1:
@@ -300,11 +306,18 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
             if page is None:
                 page = 0
             profile = resolve_profile_for_device(device_id, page)
-            syslog.info(
-                f"Map to Stream Deck: Change Page -> profile={profile} page={int(page)+1} "
-                f"device={device_id[:12] if device_id else '?'}"
-            )
-            bridge.change_page(device_id, int(page), profile)
+            if device_id not in bridge.devices:
+                syslog.warning(
+                    f"Map to Stream Deck: Change Page skipped — device "
+                    f"{device_id[:12] if device_id else '(none)'} is not a connected Stream Deck "
+                    f"(check Device in the action; State inputs must not override it)"
+                )
+            else:
+                syslog.info(
+                    f"Map to Stream Deck: Change Page -> profile={profile} page={int(page)+1} "
+                    f"device={device_id[:12]}"
+                )
+                bridge.change_page(device_id, int(page), profile)
         else:
             syslog.warning(f"Map to Stream Deck: unsupported function [{cmd}]")
 

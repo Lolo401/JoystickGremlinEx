@@ -1693,45 +1693,101 @@ class MacroFunctor(gremlin.base_profile.AbstractFunctor):
     def __init__(self, action, parent=None):
         super().__init__(action, parent)
         self.action_data: Macro = action
-        self.macro = gremlin.macro.Macro(self.id)
-        for seq in action.sequence:
-            self.macro.add_action(seq)
-        self.macro.exclusive = action.exclusive
-        self.macro.repeat = action.repeat
+        # Active instance for auto-stop / auto-restart / HoldRepeat. A fresh
+        # Macro is built per trigger so a stuck Scheduled/Running state cannot
+        # permanently silence later presses (seen with Stream Deck re-triggers).
+        self.macro = None
         self.client_list = [0]  # list of remote clients, default to any
 
     def profile_start(self):
         self.client_list = self.action_data.remote_config
+        self.macro = None
+
+    def _build_macro(self):
+        """Create a ready-to-queue Macro from the current action sequence."""
+        macro = gremlin.macro.Macro(self.id)
+        for seq in self.action_data.sequence:
+            macro.add_action(seq)
+        macro.exclusive = self.action_data.exclusive
+        macro.repeat = self.action_data.repeat
+        return macro
+
+    @staticmethod
+    def _event_is_pressed(event, value) -> bool:
+        """Resolve press state for joystick + message_key devices (Stream Deck/OSC/…)."""
+        if event is not None and getattr(event, "is_pressed", None) is not None:
+            return bool(event.is_pressed)
+        if value is not None:
+            # Prefer an explicitly stored pressed flag over float current values.
+            explicit = getattr(value, "_is_pressed", None)
+            if explicit is not None:
+                return bool(explicit)
+            current = getattr(value, "current", None)
+            if isinstance(current, bool):
+                return current
+            if isinstance(current, (int, float)):
+                return current != 0
+            try:
+                return bool(value.is_pressed)
+            except Exception:
+                pass
+        return False
 
     def process_event(self, event, value, extra_data=None):
 
-        trigger = self.action_data.execute_on_press and event.is_pressed or self.action_data.execute_on_release and not event.is_pressed
+        exec_press = bool(self.action_data.execute_on_press)
+        exec_release = bool(self.action_data.execute_on_release)
+        if not exec_press and not exec_release:
+            # Nothing selected in UI → treat as press (same as Map to Stream Deck).
+            exec_press = True
+
+        is_pressed = self._event_is_pressed(event, value)
+        trigger = (exec_press and is_pressed) or (exec_release and not is_pressed)
 
         config = gremlin.config.Configuration()
         verbose = config.verbose_mode_macro
 
         if verbose:
-            syslog.info(f"MACROFUNCTOR: {self.action_data.comment if self.action_data.comment else ''} {str(event)}")
+            syslog.info(
+                f"MACROFUNCTOR: {self.action_data.comment if self.action_data.comment else ''} "
+                f"pressed={is_pressed} trigger={trigger} "
+                f"exec_press={exec_press} exec_release={exec_release} {str(event)}"
+            )
 
-        if not event.is_pressed:
-            if self.action_data.auto_stop and self.macro.state == gremlin.macro.MacroState.Running:
-                MacroFunctor.manager.terminate_macro(self.macro)  # terminate existing running macro on release
+        if not is_pressed:
+            if (
+                self.action_data.auto_stop
+                and self.macro is not None
+                and self.macro.state == gremlin.macro.MacroState.Running
+            ):
+                MacroFunctor.manager.terminate_macro(self.macro)
 
         if not trigger:
-            # do not execute
+            return True
+
+        if not self.action_data.sequence:
+            if verbose:
+                syslog.info("\tskip — macro sequence is empty")
             return True
 
         if verbose:
-            syslog.info("\texecute")
+            syslog.info(f"\texecute ({len(self.action_data.sequence)} step(s))")
 
-        if self.action_data.auto_restart and self.macro.state == gremlin.macro.MacroState.Running:
-            MacroFunctor.manager.terminate_macro(self.macro)  # terminate existing running macro for restart
+        if (
+            self.action_data.auto_restart
+            and self.macro is not None
+            and self.macro.state == gremlin.macro.MacroState.Running
+        ):
+            MacroFunctor.manager.terminate_macro(self.macro)
 
-        # queue the macro
-        MacroFunctor.manager.queue_macro(self.macro)
+        # Fresh instance each trigger — avoids stuck non-Idle state blocking re-queue.
+        self.macro = self._build_macro()
+        MacroFunctor.manager.queue_macro(self.macro, client_list=self.client_list)
         if isinstance(self.macro.repeat, gremlin.macro.HoldRepeat):
             release_event = event.release_event()
-            gremlin.input_devices.CallbackActions().register_callback(lambda: self.process_event(release_event, value, extra_data), event, release_event)
+            gremlin.input_devices.CallbackActions().register_callback(
+                lambda: self.process_event(release_event, value, extra_data), event, release_event
+            )
         return True
 
 

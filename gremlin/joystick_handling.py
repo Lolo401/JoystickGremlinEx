@@ -1289,7 +1289,7 @@ def _create_vjoy_device(vjoy_index: int):
     device.axismap_list = []
     device.usage_page = None
     device.usage = None
-    device.axis_names = []
+    device.axis_names = {}
     return device
 
 
@@ -1611,7 +1611,7 @@ def joystick_devices_initialization():
                         axis_name = f"({i + 1})"
                     else:
                         logical_count += 1
-                    dev.axis_names.append(axis_name)
+                    dev.axis_names[axis_map.axis_index] = axis_name
 
                 vjoy_lookup[hash_value] = dev
                 _all_joystick_devices.append(dev)

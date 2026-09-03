@@ -25,15 +25,15 @@ If the Property Inspector stays on **Connecting…** and Stream Deck's log shows
 3. Bridge port default: **9020** (`ws://127.0.0.1:9020`).
 4. Restart tabs / reload if prompted so each **connected Stream Deck** gets its own device tab (e.g. Stream Deck XL, Stream Deck +).
 
-## Map buttons (Companion-style)
+## Map buttons (Button ID)
 
-1. In Stream Deck software, drop **JG Ex Button** on a key.
-2. Keep customizing **icon** and **title** in Stream Deck as usual.
-3. In the Property Inspector, set a stable **Button ID** (Companion Row/Column analogue) and **Page** (1-based Elgato profile page). Same Button ID on page 2 is a separate GEX mapping.
-4. Status should show **Connected to JG Ex** when GEX is running with the bridge enabled.
-5. In GEX, open that deck’s tab — the button appears as `P{n} · …`. Attach containers/actions (e.g. Map to VJoy) like any other button.
+1. In Stream Deck software, drop **JG Ex Button** on a key (or use a seeded JG Ex profile).
+2. Keep customizing **icon** and **title** in Stream Deck as usual — those are visual only.
+3. Property Inspector: editable **Button ID** (unique name on this deck). New buttons get an auto default such as `btn-a1b2c3`; rename to whatever you want (`Gear`, etc.). There is no Row/Column/Page field.
+4. Use **Open Plugin Configuration** for GEX host/port (not inline on every button).
+5. In GEX, click **Refresh** on that deck’s tab — inputs appear sorted alphabetically by Button ID. There is no auto-refresh.
 
-The plugin ships one JG Ex profile per device class (XL, +, Mini, Neo, classic). Change Page targets that profile’s pages for the selected device — not one profile per page.
+The plugin ships one JG Ex profile per device class (XL, +, Mini, Neo, classic). Change Page targets that profile’s pages for the selected device — not one profile per page. Change Page is unrelated to Button ID identity.
 
 ## Dials (Stream Deck+)
 

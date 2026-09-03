@@ -475,6 +475,8 @@ class MacroManager(QtCore.QObject):
                 count = len(self._queue)
                 if count > self._max_concurrent:
                     syslog.error(f"MACRO: exceeded concurrent macro: {self._max_concurrent}")
+                    # Must restore Idle — otherwise this macro can never be queued again.
+                    macro.state = MacroState.Idle
                     return None
 
             # Preprocess macro to contain pauses as necessary
@@ -1271,7 +1273,12 @@ class ProcessEventsAction(MacroAbstractAction):
         verbose = gremlin.config.Configuration().verbose_mode_macro
         if verbose:
             syslog.info("MACRO: Process Events")
-        QtWidgets.QApplication.processEvents()
+        # Macro steps run on a worker thread. processEvents() is only safe on
+        # the Qt GUI thread — calling it elsewhere is undefined and can stall
+        # or corrupt UI (seen around MacroListView / Stream Deck triggers).
+        app = QtWidgets.QApplication.instance()
+        if app is not None and QtCore.QThread.currentThread() == app.thread():
+            app.processEvents()
 
 
 class PauseAction(MacroAbstractAction):

@@ -3287,7 +3287,7 @@ class AbstractInputSelector(QWidget):
                         input_id = i + 1
                         if input_type == InputType.JoystickAxis:
                             input_id = device.axismap_list[i].axis_index
-                            s_ui = f"Axis {device.axis_names[i]}"
+                            s_ui = f"Axis {device.axis_names.get(input_id, input_id)}"
                         else:
                             s_ui = gremlin.common.input_to_ui_string(input_type, input_id)
                         selection_widget.addItem(s_ui, (input_type, input_id))
@@ -7301,7 +7301,7 @@ class AxesTimeline(QtWidgets.QGroupBox):
         colors = Color.PenColors()
         for i in range(device.axis_count):
             index = device.axismap_list[i].axis_index
-            axis_name = device.axis_names[i]
+            axis_name = device.axis_names.get(index, f"Axis {index}")
             label = QtWidgets.QLabel(f"Axis {axis_name}")
             css = f"QLabel {{ color: {colors.get(index, '#000000')}; font-weight: bold }}"
             label.setStyleSheet(css)
@@ -9979,10 +9979,13 @@ class WidgetCacheTracker:
                 # remove excess items from the queu
                 while len(self._widget_map) > max_widgets:
                     key = self.oldestKey()
-                    self._remove(key)
+                    if key is None:
+                        break
+                    self._remove(key, keep_params=True)
             else:
-                # unlimited
+                # unlimited — drop live widgets; keep params so they can be rebuilt
                 self._widget_map.clear()
+                self._key_time_map.clear()
 
     def addWidget(self, key, widget):
         """adds a widget to the cache and drops the oldest one in round robin style if a cache size is specified
@@ -10009,20 +10012,23 @@ class WidgetCacheTracker:
 
         verbose = gremlin.config.Configuration().verbose_mode_ui_level(1)
         if self._enabled and max_widgets > 0:
-            # queue check
-
-            if len(self._widget_map) >= self._max_widgets:
-                while len(self._widget_map) > max_widgets:
-                    oldest_key = self.oldestKey()
-                    if verbose:
-                        syslog.info(f"WidgetCache: pop oldest widget key: [{oldest_key}] ")
-                    self._remove(oldest_key)
-            # add to the queue
-
+            # Evict until there is room for the new entry.
+            while len(self._widget_map) >= max_widgets:
+                oldest_key = self.oldestKey()
+                if oldest_key is None:
+                    break
+                if oldest_key == key:
+                    # Replacing the same key — drop the live widget but keep params.
+                    self._remove(oldest_key, keep_params=True)
+                    break
+                if verbose:
+                    syslog.info(f"WidgetCache: pop oldest widget key: [{oldest_key}] ")
+                self._remove(oldest_key, keep_params=True)
         else:
             # cache disabled
             if len(self._widget_map):
                 self._widget_map.clear()
+                self._key_time_map.clear()
 
         # add to the cache (could also replace)
         self._widget_map[key] = widget
@@ -10042,28 +10048,46 @@ class WidgetCacheTracker:
             return None
         return min(self._key_time_map, key=lambda k: self._key_time_map[k])
 
-    def _remove(self, key):
+    def _remove(self, key, keep_params: bool = True):
         """removes a mapping and notifies the owner"""
         if not self._enabled:
             # caching disabled - never remove
             return
+        if key not in self._widget_map:
+            if not keep_params:
+                self._param_map.pop(key, None)
+            return
 
-        if key in self._widget_map:
-            widget = self._widget_map[key]
-            del self._widget_map[key]  # remove from the active widget list
-            del self._key_time_map[key]
-            del self._param_map[key]
+        widget = self._widget_map.pop(key, None)
+        self._key_time_map.pop(key, None)
+        if not keep_params:
+            self._param_map.pop(key, None)
 
+        if widget is None:
+            return
+
+        if verbose:
+            syslog.info(f"Trigger widget expiration: [{key}]")
+        # Owner detaches from the stacked panel first; it may delete the C++ object.
+        try:
             if Shiboken.isValid(widget):
-                try:
-                    widget.expired.emit(key, widget)
-                    widget.hide()
-                    # delete the widget proper
-                    if hasattr(widget, "_cleanup_ui"):
-                        widget._cleanup_ui()
-                    widget.deleteLater()
-                except Exception as e:
-                    pass  # C++ exception might occur here
+                widget.expired.emit(key, widget)
+        except RuntimeError:
+            return
+
+        if not Shiboken.isValid(widget):
+            return
+
+        if verbose:
+            syslog.info(f"Delete widget: [{key}]")
+        try:
+            widget.hide()
+            if hasattr(widget, "_cleanup_ui"):
+                widget._cleanup_ui()
+            widget.deleteLater()
+        except RuntimeError:
+            # Already deleted by the expired handler / Qt GC.
+            pass
 
     def contains(self, key) -> bool:
         """true if the key is in the cache for a valid widget"""
@@ -10086,7 +10110,12 @@ class WidgetCacheTracker:
         if key in self._param_map:
             if key not in self._widget_map:
                 # recreate the widget using the original data
-                instance_type, params = self.getParams(key)
+                # Stored as (instance_type, key, params) — older code packed 2-tuples.
+                stored = self.getParams(key)
+                if not stored:
+                    return (None, created)
+                instance_type = stored[0]
+                params = stored[-1]
                 if verbose:
                     syslog.info(f"WidgetCache: create instance from parameter for key [{key}] [{instance_type.__name__}]")
                 widget = instance_type.fromParams(params)
@@ -10095,7 +10124,21 @@ class WidgetCacheTracker:
             else:
                 # existing widget in the cache
                 widget = self._widget_map[key]
-                if verbose:
+                if not Shiboken.isValid(widget):
+                    # Stale Python wrapper — drop and recreate from params.
+                    self._widget_map.pop(key, None)
+                    self._key_time_map.pop(key, None)
+                    stored = self.getParams(key)
+                    if not stored:
+                        return (None, created)
+                    instance_type = stored[0]
+                    params = stored[-1]
+                    if verbose:
+                        syslog.info(f"WidgetCache: recreate invalid cached widget [{key}]")
+                    widget = instance_type.fromParams(params)
+                    self.addWidget(key, widget)
+                    created = True
+                elif verbose:
                     syslog.info(f"WidgetCache: using cached widget [{type(widget).__name__}]")
 
             return (widget, created)
@@ -10106,14 +10149,14 @@ class WidgetCacheTracker:
         """removes a widget from the cache, keeping the parameters optionally"""
 
         verbose = gremlin.config.Configuration().verbose_mode_ui_level(1)
-        if key in self._param_map:
-            self._remove(key)
+        if key in self._param_map or key in self._widget_map:
+            self._remove(key, keep_params=keep_params)
             if verbose:
                 syslog.info(f"WidgetCache: remove cached widget [{key}]")
             if not keep_params:
                 if verbose:
                     syslog.info("\tremove params")
-                del self._param_map[key]
+                self._param_map.pop(key, None)
             else:
                 if verbose:
                     syslog.info("\tkeep params")
@@ -10352,19 +10395,39 @@ class QSplitTabWidget(QDataWidget):
 
     def _handle_expired_widget_ui(self, key, widget):
         """called by the widget cache when a widget is being removed from the cache"""
-        if Shiboken.isValid(self) and Shiboken.isValid(widget):
-            verbose = gremlin.config.Configuration().verbose_mode_ui_level(1)
-            if key in self._widget_config_index_map:
-                # one of ours - unregister it
-                if verbose:
-                    syslog.info(f" QtSplitTabWidget: Expired widget: [{key}]")
+        if not Shiboken.isValid(self):
+            return
+        verbose = gremlin.config.Configuration().verbose_mode_ui_level(1)
+        if key not in self._widget_config_index_map:
+            return
+        # Detach from the right-panel stack only. WidgetCacheTracker._remove owns
+        # hide()/deleteLater() — calling unregisterWidget here double-deletes and
+        # crashes with "Internal C++ object already deleted".
+        if verbose:
+            syslog.info(f" QtSplitTabWidget: Expired widget: [{key}]")
+        index = -1
+        try:
+            if Shiboken.isValid(widget):
+                try:
+                    widget.expired.disconnect(self._handle_expired_widget)
+                except Exception:
+                    pass
                 index = self._right_panel_stacked_widget.indexOf(widget)
                 if index != -1:
-                    # one of ours
                     if verbose:
                         syslog.info("\tremoving widget from stacked widget")
-                    widget.expired.disconnect(self._handle_expired_widget)
-                    self.unregisterWidget(key)
+                    self._right_panel_stacked_widget.removeWidget(widget)
+                    for callback in self._unregistered_callbacks:
+                        callback(key, index, widget)
+        except RuntimeError:
+            pass
+
+        if key in self._widget_config_index_map:
+            index = self._widget_config_index_map.pop(key, index)
+        if key in self._registered_widget_map:
+            del self._registered_widget_map[key]
+        if index != -1 and index in self._widget_config_device_map:
+            del self._widget_config_device_map[index]
 
     def unload(self):
         """unloads UI resources used by a particular tab widget"""
@@ -12869,7 +12932,8 @@ class QAxisSourceSelector(QWidget):
                 count = device.axis_count
                 self._axis_selector_widget.clear()
                 for id in range(1, count + 1):
-                    axis_name = device.axis_names[id - 1]
+                    axis_index = device.linear_id_map.get(id, id)
+                    axis_name = device.axis_names.get(axis_index, f"Axis {id}")
                     self._axis_selector_widget.addItem(f"Axis {axis_name}", id)
 
             if input_id is not None:

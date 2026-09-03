@@ -9,37 +9,21 @@
   <div class="sdpi-wrapper">
     <div class="sdpi-item">
       <div class="sdpi-item-label">Button ID</div>
-      <input class="sdpi-item-value" id="buttonId" type="text" value="" placeholder="e.g. 0:0" />
-    </div>
-    <div class="sdpi-item">
-      <div class="sdpi-item-label">Page</div>
-      <input class="sdpi-item-value" id="page" type="number" value="1" min="1" max="99" step="1" />
-    </div>
-    <div class="sdpi-item">
-      <div class="sdpi-item-label">Title hint</div>
-      <input class="sdpi-item-value" id="title" type="text" placeholder="Optional GEX list label" />
+      <input class="sdpi-item-value" id="buttonId" type="text" value="" placeholder="e.g. Gear" />
     </div>
     <div class="sdpi-item">
       <div class="sdpi-item-label">Status</div>
       <div class="sdpi-item-value" id="status">Connecting…</div>
     </div>
-    <div class="sdpi-heading">Plugin Configuration</div>
     <div class="sdpi-item">
-      <div class="sdpi-item-label">GEX host</div>
-      <input class="sdpi-item-value" id="host" type="text" value="127.0.0.1" />
-    </div>
-    <div class="sdpi-item">
-      <div class="sdpi-item-label">Bridge port</div>
-      <input class="sdpi-item-value" id="port" type="number" value="9020" min="4096" max="65535" />
-    </div>
-    <div class="sdpi-item">
-      <button class="sdpi-item-value" id="applyBridge">Apply bridge settings</button>
+      <button class="sdpi-item-value" id="openConfig" type="button">Open Plugin Configuration</button>
     </div>
     <div class="sdpi-item">
       <details class="sdpi-item-value">
         <summary>Help</summary>
-        <p><b>Button ID</b> identifies the key within a page (e.g. 0:0). <b>Page</b> is the Elgato profile page (1-based) so the same Button ID on page 2 is a separate GEX mapping.
-        Customize the Stream Deck icon and title as usual. Enable the Stream Deck bridge in GremlinEx Options (OSC/MIDI tab).</p>
+        <p><b>Button ID</b> is a name you choose (letters, digits, <code>-_.:</code> — no spaces).
+        It must be unique on this deck. Joystick Gremlin Ex lists buttons alphabetically by this ID.
+        Click <b>Refresh</b> in GEX after changes. Bridge host/port are under Plugin Configuration.</p>
       </details>
     </div>
   </div>

@@ -8,21 +8,30 @@ This path does **not** require Bitfocus Companion or OSC for those keys. Compani
 
 1. Install the plugin from `streamdeck_plugin/` (see that folder’s README). CodePath must be `app.html` (classic Stream Deck HTML host).
 2. In GremlinEx **Options → OSC/MIDI**, enable **Stream Deck bridge** (default port `9020`).
-3. Place **JG Ex Button** (or **JG Ex Dial**) actions on Stream Deck keys. Customize icons/titles in Stream Deck software.
+3. Place **JG Ex Button** (or **JG Ex Dial**) actions on Stream Deck keys. Customize icons/titles in Stream Deck software (visual only).
 4. Property Inspector status should show **Connected to JG Ex**. Each connected deck gets its own GEX device tab (named from Elgato, e.g. **Stream Deck XL**, **Stream Deck +**) with **Plugin: connected**.
-5. Set a stable **Button ID** and **Page** in the Property Inspector (Page defaults to `1`).
-6. Map the auto-created inputs on that deck’s GremlinEx tab (containers / Map to VJoy / etc.).
+5. Set an editable **Button ID** in the Property Inspector (a unique name on that deck). New buttons get an auto default such as `btn-a1b2c3`. Bridge host/port are under **Open Plugin Configuration**.
+6. Click **Refresh** on that deck’s GremlinEx tab to import/update inputs from Stream Deck (there is no auto-refresh).
+7. Map the listed inputs (containers / Map to VJoy / etc.).
 
-## Page-scoped mappings
+## Button ID (freeform)
 
-GEX identifies each Stream Deck input as `deviceId : kind : page : buttonId` (page is 1-based).
+GEX identifies each Stream Deck input as `deviceId : kind : buttonId`.
 
-- The same **Button ID** on different Elgato profile pages is intentional and supported — each page is a separate GEX input (e.g. `P1 · …` vs `P2 · …`).
-- Set **Page** on each JG Ex Button / Dial to match the Elgato profile page that hosts it. Seeded JG Ex multi-page profiles write this automatically.
-- Only the currently visible page’s keys are live (Elgato only sends events for visible actions); profile mappings for other pages are kept.
-- Older profiles without a `page` value are treated as **page 1**.
+- **Button ID** is a user-defined opaque string (letters, digits, and `-_.:`). It must be unique on that deck; collisions map to one GEX input.
+- Examples: `Gear`, `LandingLights`, `btn-a1b2c3`. Seeded profiles use names like `p1-r1-c1` (plain strings, not a structured schema).
+- Only **JG Ex Button** / **JG Ex Dial** actions appear in GEX. Other Stream Deck actions are ignored.
+- The list is sorted alphabetically by Button ID (case-insensitive), then kind. Use **Refresh** after programming changes in Stream Deck software.
+- Refresh imports **all pages/folders** from the JG Ex Stream Deck profile on disk (ProfilesV3) — every action that has a `buttonId`, regardless of layout.
+- Legacy `P1:R1:C1`-style IDs still work as opaque strings (kept as-is).
 
-This is separate from **Map to Stream Deck → Change Page** title feedback (`P1` / `P2` via `setTitle`). Real per-page bindings use Elgato profile pages plus the **Page** setting.
+Stream Deck key **titles/icons** are cosmetic only. Folder/page navigation is unrelated to identity — use different Button IDs for different bindings.
+
+### Companion “Dynamic Page” (investigation)
+
+In Bitfocus’s official Stream Deck plugin, **Dynamic Page** means the button’s page is *not* fixed: Companion is told `page=null` and the action uses the **currently active Companion page** with the configured row/column. Fixed-page mode binds to an explicit Companion page number and needs Satellite “subscriptions” for images.
+
+That feature does **not** apply to JG Ex freeform IDs: Elgato owns profile pages and does not send a page index in SDK events. Identity lives only in the Button ID you set in settings.
 
 ## Multi-device
 

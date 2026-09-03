@@ -3699,7 +3699,14 @@ class EventHandler(QtCore.QObject):
 
         for functor in functors:
             try:
-                value = gremlin.actions.Value(event.value)
+                # Button-like events (incl. Stream Deck) must carry is_pressed on
+                # Value — event.value is often a float 1.0/0.0 which makes
+                # Value.is_pressed False when only current is set.
+                if event.is_axis:
+                    value = gremlin.actions.Value(event.value)
+                else:
+                    pressed = bool(event.is_pressed)
+                    value = gremlin.actions.Value(pressed, is_pressed=pressed)
                 functor.process_event(event, value)
             except Exception as ex:
                 syslog.error(f"FUNCTOR CALLBACK: error {ex}")
@@ -3740,12 +3747,13 @@ class EventHandler(QtCore.QObject):
 
     def _matching_osc_callbacks(self, event):
         """returns list of callbacks matching the event"""
+        import gremlin.config
+        import gremlin.execution_graph
+
         callback_list = []
         if event.event_type == InputType.OpenSoundControl:
             key = event.identifier.message_key
             if event.device_guid in self.osc_callbacks:
-                import gremlin.execution_graph
-
                 ec = gremlin.execution_graph.ExecutionContext()  # current execution context
                 # search callbacks for mode hierarchy
                 callback_list = ec.getCallbacks(self.osc_callbacks[event.device_guid], key, self.runtime_mode)
@@ -3764,15 +3772,38 @@ class EventHandler(QtCore.QObject):
 
     def _matching_streamdeck_callbacks(self, event):
         """Returns callbacks for Stream Deck plugin-bridge events (message_key lookup)."""
+        import gremlin.config
+        import gremlin.execution_graph
+        from gremlin.ui.streamdeck_device import normalize_button_id
+
         callback_list = []
         if event.event_type == InputType.StreamDeck:
             identifier = event.identifier
             key = identifier.message_key if hasattr(identifier, "message_key") else str(identifier)
             if event.device_guid in self.streamdeck_callbacks:
-                import gremlin.execution_graph
-
                 ec = gremlin.execution_graph.ExecutionContext()
-                callback_list = ec.getCallbacks(self.streamdeck_callbacks[event.device_guid], key, self.runtime_mode)
+                device_cbs = self.streamdeck_callbacks[event.device_guid]
+                callback_list = ec.getCallbacks(device_cbs, key, self.runtime_mode)
+                # Fallback: registration may have used kind:buttonId without deviceId prefix.
+                if not callback_list and hasattr(identifier, "button_id"):
+                    kind = getattr(identifier, "kind", None) or "button"
+                    bid = normalize_button_id(getattr(identifier, "button_id", "") or "")
+                    if bid:
+                        for alt in (f"{kind}:{bid}",):
+                            callback_list = ec.getCallbacks(device_cbs, alt, self.runtime_mode)
+                            if callback_list:
+                                break
+                        if not callback_list:
+                            # Last resort: any registered key ending with :kind:buttonId
+                            suffix = f":{kind}:{bid}"
+                            for mode_map in device_cbs.values():
+                                for reg_key in mode_map.keys():
+                                    if reg_key == f"{kind}:{bid}" or str(reg_key).endswith(suffix):
+                                        callback_list = ec.getCallbacks(device_cbs, reg_key, self.runtime_mode)
+                                        if callback_list:
+                                            break
+                                if callback_list:
+                                    break
 
             config = gremlin.config.Configuration()
             verbose = config.verbose_mode_streamdeck and config.verbose_mode_extra

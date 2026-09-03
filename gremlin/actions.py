@@ -104,6 +104,26 @@ class Value:
         return e
 
 
+class _KeyboardConditionInputProxy:
+    """Runtime stand-in for KeyboardInputItem when profile XML omitted nested key data.
+
+    Only the attributes used by KeyboardCondition.process_event are provided.
+    """
+
+    def __init__(self, key):
+        self._key = key
+
+    @property
+    def latched(self):
+        return bool(self._key and self._key.latched)
+
+    @property
+    def display_name(self):
+        if self._key is None:
+            return "unknown"
+        return getattr(self._key, "latched_name", None) or getattr(self._key, "name", "unknown")
+
+
 class KeyboardCondition(AbstractCondition):
     """Condition verifying the state of keyboard keys.
 
@@ -118,9 +138,41 @@ class KeyboardCondition(AbstractCondition):
         :param is_extended whether or not the key code is extended
         :param comparison the comparison operation to perform when evaluated
         """
-        assert isinstance(input_item, gremlin.keyboard.Key), "invalid input_item for keyboard condition"
-        super().__init__(comparison, container_condition, target=target)
-        self.input_item = input_item
+        import gremlin.macro
+        from gremlin.ui.keyboard_device import KeyboardInputItem
+
+        super().__init__(comparison)
+        syslog = logging.getLogger("system")
+
+        if isinstance(input_item, (KeyboardInputItem, _KeyboardConditionInputProxy)):
+            self.input_item = input_item
+            return
+
+        if input_item is not None and hasattr(input_item, "latched"):
+            # Duck-typed stand-in (tests / future loaders)
+            self.input_item = input_item
+            return
+
+        # Pre-m77T19 profiles (and incomplete loads) may omit nested
+        # keylatched/keyboard input_item while still carrying scan-code attrs.
+        key = gremlin.macro.key_from_code(scan_code, is_extended) if scan_code is not None else None
+        if key is None:
+            syslog.error(
+                "KeyboardCondition: invalid input_item (%s) and cannot resolve "
+                "scan_code=%s extended=%s — condition will always fail",
+                type(input_item).__name__ if input_item is not None else None,
+                scan_code,
+                is_extended,
+            )
+            self.input_item = _KeyboardConditionInputProxy(None)
+            return
+
+        syslog.warning(
+            "KeyboardCondition: reconstructing missing input_item from scan_code=%s extended=%s",
+            scan_code,
+            is_extended,
+        )
+        self.input_item = _KeyboardConditionInputProxy(key)
 
     def __call__(self, event, value, extra_data=None):
         # default call
@@ -142,12 +194,12 @@ class KeyboardCondition(AbstractCondition):
         if verbose:
             logtabs = gremlin.shared_state.logTabs(True)
 
-        key = self.input_item
-        if not key:
-            return True # no key = pass
+        if self.input_item is None:
+            if verbose:
+                syslog.warning(f"{logtabs}KeyboardCondition: missing input_item - FAIL")
+            return False
 
-
-        key_pressed = key.latched
+        key_pressed = self.input_item.latched
         if self.comparison == "pressed":
             state = key_pressed
         else:
@@ -160,7 +212,8 @@ class KeyboardCondition(AbstractCondition):
         return state
 
     def condition_name(self) -> str:
-        return f"KeyboardCondition {self.input_item.display_name}"
+        name = self.input_item.display_name if self.input_item is not None else "unknown"
+        return f"KeyboardCondition {name}"
 
     def __str__(self):
         return self.condition_name()
@@ -923,7 +976,12 @@ def convert_condition(condition):
     import gremlin.actions
     import gremlin.input_item
     if isinstance(condition, gremlin.ui.keyboard_device.BaseKeyboardCondition):
-        return gremlin.actions.KeyboardCondition(condition.scan_code, condition.is_extended, condition.comparison, input_item = condition.input_item, target = condition.target)
+        return gremlin.actions.KeyboardCondition(
+            condition.scan_code,
+            condition.is_extended,
+            condition.comparison,
+            input_item=condition.input_item,
+        )
 
     elif isinstance(condition, gremlin.ui.joystick_device.BaseJoystickCondition):
         return gremlin.actions.JoystickCondition(condition, target = condition.target)
@@ -937,5 +995,9 @@ def convert_condition(condition):
         return gremlin.actions.StateCondition(condition, target = condition.target)
     elif isinstance(condition, gremlin.input_item.BaseModeCondition):
         return gremlin.actions.ModeCondition(condition, target = condition.target)
+
+    # Already a runtime functor (axis/hat virtual button nodes store VirtualButtonCondition)
+    if isinstance(condition, AbstractCondition):
+        return condition
 
     assert False, f"Invalid base condition to convert: {type(condition).__name__}"
