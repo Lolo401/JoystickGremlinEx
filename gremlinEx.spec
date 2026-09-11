@@ -108,6 +108,7 @@ a = Analysis(
         "gremlin.ui.obs_overlay.shapes",
         "gremlin.ui.obs_overlay.templates",
         "gremlin.ui.obs_overlay.widgets",
+    ],
     hookspath=None,
     runtime_hooks=None,
     excludes=["torch",
