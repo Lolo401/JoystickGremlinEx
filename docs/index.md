@@ -109,6 +109,8 @@ OSC (Open Sound Control) is a very important feature support in GremlinEx that a
 
 For Elgato Stream Deck specifically, GremlinEx also supports a direct [Stream Deck plugin bridge](streamdeck.md) that keeps Stream Deck software running (no Companion required for those keys).
 
+Joystick axes and buttons can be drawn on a chromakey window for OBS, or as an on-screen HUD, without Touch OSC. See the [overlay](obs_overlay.md) guide.
+
 Please see the [OSC configuration section](usage.md#osc-device-open-sound-control) for OSC specific setup to enable this feature.  
 
 ### Virus False positives
@@ -146,6 +148,7 @@ GremlinEx is based on a fork from the 2019 [Joystick Gremlin by Whitemagic](http
 - Support for extended keys including F13 to F24 and media keys
 - Selectable voice and playback speed for text to speech prompts
 - Modern user interface with dark UI theme support
+- [Overlay designer](obs_overlay.md) for chromakey or on-screen joystick visualization without Touch OSC
 
 While GremlinEx is based on Joystick Gremlin, it's important to note they are not the same software, certainly not internally, but also from the standpoint of behaviors.  GremlinEx is heavily event based, has a completely different execution engine.  While legacy profiles may load in GremlinEx, complete compatibility is not assured.
 

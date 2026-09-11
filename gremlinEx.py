@@ -637,6 +637,8 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
             # plugins
             plugins = gremlin.shared_state.current_profile.plugins
             return {edit_mode: True} if len(plugins) > 0 else {}
+        elif device_guid == gremlin.shared_state.overlay_tab_guid:
+            return {}
         elif device_guid == gremlin.shared_state.keyboard_tab_guid:
             look_for_containers = False
 
@@ -743,6 +745,8 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
                     return TabDeviceType.OctaviIFR1
                 case DeviceType.StreamDeck:
                     return TabDeviceType.StreamDeck
+                case DeviceType.Overlay:
+                    return TabDeviceType.Overlay
 
             raise ValueError(f"Don't know how to handle type: [{device.device_type}]")
 
@@ -3419,6 +3423,34 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
                                 tab_device_list.append(device)
                                 index += 1
 
+                        case DeviceType.Overlay:
+                            try:
+                                device_guid = gremlin.util.normalize_guid(gremlin.shared_state.overlay_tab_guid)
+                                device = gremlin.joystick_handling.getDevice(device_guid)
+                                widget = self.getRegisteredWidget(device_guid)
+                                if not widget:
+                                    import gremlin.ui.obs_overlay as obs_overlay
+
+                                    manager = obs_overlay.OverlayManager()
+                                    widget = obs_overlay.OverlayDesignerWidget(
+                                        manager.scene,
+                                        overlay_manager=manager,
+                                    )
+                                    self.registerWidget(device_guid, widget)
+                                    self._overlay_device_guid = device_guid
+                                    widget.data = (
+                                        TabDeviceType.Overlay,
+                                        device_guid,
+                                        index,
+                                    )
+                                if device not in tab_device_list:
+                                    self._add_tab(device, TabDeviceType.Overlay)
+                                    tab_device_list.append(device)
+                                    index += 1
+                            except Exception as err:
+                                syslog.error(f"DEVICE TABS: Overlay tab failed: {err}")
+                                syslog.error(traceback.format_exc())
+
             self._reindex_tabs()
 
             el = gremlin.event_handler.EventListener()
@@ -3967,8 +3999,9 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
                         (
                             gremlin.shared_state.settings_tab_guid,
                             gremlin.shared_state.plugins_tab_guid,
+                            gremlin.shared_state.overlay_tab_guid,
                         ),
-                    )  # settings and plugins tabs don't have inputs
+                    )  # settings, plugins, and overlay tabs don't have inputs
 
                     if verbose:
                         syslog.info(
@@ -4307,6 +4340,9 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
 
         # add the user plugin tab
         guid_list.append(self._find_tab_data_guid(gremlin.shared_state.plugins_tab_guid))
+
+        # add the overlay designer tab
+        guid_list.append(self._find_tab_data_guid(gremlin.shared_state.overlay_tab_guid))
 
         # move the tabs to the correct location
         tab_data = [self.ui.devices_tab_header_widget.tabData(index) for index in range(self.ui.devices_tab_header_widget.count())]

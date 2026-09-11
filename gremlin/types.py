@@ -287,6 +287,7 @@ class DeviceType(IntEnum):
     OctaviIFR1 = 10  # octavi IFR1 special device
     Maestro = 11  # maestro special device
     StreamDeck = 12  # Elgato Stream Deck via plugin bridge
+    Overlay = 13  # OBS / on-screen overlay designer tab
 
     @staticmethod
     def isFixedInput(value: DeviceType) -> bool:
@@ -304,6 +305,7 @@ class DeviceType(IntEnum):
             DeviceType.NotSet,
             DeviceType.Settings,
             DeviceType.Plugins,
+            DeviceType.Overlay,
         )
 
     @staticmethod
@@ -347,6 +349,7 @@ _DeviceType_to_display_name = {
     DeviceType.OctaviIFR1: "Octavi IFR1",
     DeviceType.Maestro: "Maestro",
     DeviceType.StreamDeck: "Stream Deck",
+    DeviceType.Overlay: "Overlay",
 }
 
 _DeviceType_to_string_lookup = {
@@ -363,6 +366,7 @@ _DeviceType_to_string_lookup = {
     DeviceType.OctaviIFR1: "octaviifr1",
     DeviceType.Maestro: "maestro",
     DeviceType.StreamDeck: "streamdeck",
+    DeviceType.Overlay: "overlay",
 }
 
 
@@ -380,6 +384,7 @@ _DeviceType_to_enum_lookup = {
     "octaviifr1": DeviceType.OctaviIFR1,
     "maestro": DeviceType.Maestro,
     "streamdeck": DeviceType.StreamDeck,
+    "overlay": DeviceType.Overlay,
 }
 
 
@@ -394,6 +399,7 @@ class PluginVariableType(xIntEnum):
     VirtualInput = 6
     Mode = 7
     Selection = 8
+    Action = 9
 
     @staticmethod
     def to_string(value: PluginVariableType) -> str:  # noqa: F821
@@ -421,6 +427,7 @@ _PluginVariableType_to_string_lookup = {
     PluginVariableType.VirtualInput: "VirtualInput",
     PluginVariableType.Mode: "Mode",
     PluginVariableType.Selection: "Selection",
+    PluginVariableType.Action: "Action",
 }
 _PluginVariableType_to_enum_lookup = {
     "Int": PluginVariableType.Int,
@@ -431,6 +438,7 @@ _PluginVariableType_to_enum_lookup = {
     "VirtualInput": PluginVariableType.VirtualInput,
     "Mode": PluginVariableType.Mode,
     "Selection": PluginVariableType.Selection,
+    "Action": PluginVariableType.Action,
 }
 
 
@@ -1109,6 +1117,7 @@ class TabDeviceType(int, Enum):
     MaestroInput = 12
     MaestroOutput = 13
     StreamDeck = 14
+    Overlay = 15
 
 
 class GamePadOutput(Enum):

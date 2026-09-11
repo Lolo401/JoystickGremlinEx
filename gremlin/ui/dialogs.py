@@ -4776,7 +4776,7 @@ class DeviceDisplayDialog(gremlin.ui.ui_common.QRememberDialog):
             item.setData(QtCore.Qt.UserRole, (device, visible))
             item.setSizeHint(widget.sizeHint())
             widget.setListWidget(item)
-            enabled = device.device_type not in (DeviceType.Plugins, DeviceType.Settings)
+            enabled = device.device_type not in (DeviceType.Plugins, DeviceType.Settings, DeviceType.Overlay)
             widget.setVisibleEnabled(enabled)
             self._list_widget.setItemWidget(item, widget)
 

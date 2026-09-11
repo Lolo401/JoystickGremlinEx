@@ -123,6 +123,10 @@ plugins_tab_id = gremlin.util.normalize_guid(plugins_tab_guid)
 settings_tab_guid = gremlin.util.parse_guid('5b70b5ba-bded-41a8-bd91-d8a209b8e981')
 settings_tab_id = gremlin.util.normalize_guid(settings_tab_guid)
 
+# UUID of the overlay designer tab (OBS / on-screen overlay)
+overlay_tab_guid = gremlin.util.parse_guid('c8f3a91e-2d47-4b6c-9e15-7a6d4c2b8f01')
+overlay_tab_id = gremlin.util.normalize_guid(overlay_tab_guid)
+
 # UUID of the MIDI tab (midi device)
 midi_tab_guid = gremlin.util.parse_guid('1b56ecf7-0624-4049-b7b3-8d9b7d8ed7e0')
 midi_tab_id = gremlin.util.normalize_guid(midi_tab_guid)
@@ -183,6 +187,7 @@ def isDeviceTabActive(device_guid):
 virtual_device_guid_type_map = [
     (plugins_tab_guid, DeviceType.NotSet),
     (settings_tab_guid, DeviceType.Settings),
+    (overlay_tab_guid, DeviceType.Overlay),
     (midi_tab_guid, DeviceType.Midi),
     (osc_tab_guid, DeviceType.Osc),
     (mode_tab_guid, DeviceType.ModeControl),
@@ -201,6 +206,7 @@ def _init_special_device_guids():
     _virtual_device_guid_to_name_map[str(midi_tab_guid).casefold()] = "MIDI"
     _virtual_device_guid_to_name_map[str(settings_tab_guid).casefold()] = "Settings"
     _virtual_device_guid_to_name_map[str(plugins_tab_guid).casefold()] = "Plugins"
+    _virtual_device_guid_to_name_map[str(overlay_tab_guid).casefold()] = "Overlay"
     _virtual_device_guid_to_name_map[str(mode_tab_guid).casefold()] = "Modes"
     _virtual_device_guid_to_name_map[str(streamdeck_tab_guid).casefold()] = "Stream Deck (legacy)"
 

@@ -700,3 +700,31 @@ class SelectionVariable(AbstractVariable):
 
     def __str__(self):
         return f"SelectionVariable: description: {self.description} values: {self.options}"
+
+
+class ButtonVariable(AbstractVariable):
+    """Optional action button shown in the plugin instance configuration panel."""
+
+    def __init__(self, label, description, callback=None, is_optional=True):
+        super().__init__(label, description, gremlin.types.PluginVariableType.Action, is_optional=True)
+        self.value = None
+        self.callback = callback
+
+    def create_ui_element(self, value):
+        layout = QtWidgets.QGridLayout()
+        button = QtWidgets.QPushButton(self.label)
+        button.setToolTip(self.description)
+        button.clicked.connect(self._clicked)
+        layout.addWidget(button, 0, 0, 1, 2)
+        layout.setColumnStretch(1, 1)
+        return layout
+
+    def _clicked(self):
+        if callable(self.callback):
+            self.callback()
+
+    def _process_registry_value(self, value):
+        return None
+
+    def __str__(self):
+        return f"ButtonVariable: {self.label}"

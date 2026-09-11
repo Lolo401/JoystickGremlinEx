@@ -3922,6 +3922,7 @@ class InputListenerWidget(QBoxFrame):
 
         self._close_on_key = not any_button and not (InputType.Keyboard in event_types or InputType.KeyboardLatched in event_types)
         self._esc_key = key_from_name("esc")
+        self._hooked = False
 
         # Create and configure the ui overlay
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -3951,7 +3952,7 @@ class InputListenerWidget(QBoxFrame):
             self.main_layout.addWidget(widget, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
             msg = """<center>Press Ok to accept, Cancel to quit.</center>"""
         else:
-            msg = f"""<center>Please press the desired {self._valid_event_types_string()}.<br/><br/>Hold ESC{"" if self._close_on_key else " for one second"} to abort.</center>"""
+            msg = f"""<center>Please press the desired {self._valid_event_types_string()}.<br/><br/>Press ESC{"" if self._close_on_key else " and hold for one second"} to abort.</center>"""
 
         label.setText(msg)
 
@@ -3959,7 +3960,8 @@ class InputListenerWidget(QBoxFrame):
         gremlin.shared_state.push_suspend_ui_keyinput()  # prevent UI hotkeys from working
 
         self.setWindowModality(QtCore.Qt.ApplicationModal)
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setFrameStyle(QtWidgets.QFrame.Plain | QtWidgets.QFrame.Box)
         palette = QtGui.QPalette()
         palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColorConstants.DarkGray)
@@ -3976,19 +3978,73 @@ class InputListenerWidget(QBoxFrame):
             mh = gremlin.windows_event_hook.MouseHook()
             mh.registerMouseMove(self._mouse_move_cb)
             mh.register(self._mouse_event_cb)  # trap clicks
+        self._hooked = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
+        self.setFocus(QtCore.Qt.OtherFocusReason)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() == QtCore.Qt.Key_Escape:
+            self._abort_now()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def unhook(self):
         """called on widget destruction"""
-
+        if not self._hooked:
+            return
+        self._hooked = False
         el = gremlin.event_handler.EventListener()
-        el.keyboard_event.disconnect(self._kb_event_cb)
-        el.joystick_event_ui.disconnect(self._joy_event_cb)
+        try:
+            el.keyboard_event.disconnect(self._kb_event_cb)
+        except Exception:
+            pass
+        try:
+            el.joystick_event_ui.disconnect(self._joy_event_cb)
+        except Exception:
+            pass
 
         if self._listen_mouse:
             # unhook mouse callbacks
             mh = gremlin.windows_event_hook.MouseHook()
             mh.unregisterMouseMove(self._mouse_move_cb)
             mh.unregister(self._mouse_event_cb)
+
+    def _is_escape(self, event=None, key=None) -> bool:
+        """True if this is Escape. Key objects are copies, so identity comparison does not work."""
+        if event is not None:
+            if int(getattr(event, "virtual_code", 0) or 0) == 0x1B:
+                return True
+            ident = getattr(event, "identifier", None)
+            if isinstance(ident, (tuple, list)) and ident and int(ident[0] or 0) == 0x01:
+                return True
+        if key is not None:
+            if int(getattr(key, "virtual_code", 0) or 0) == 0x1B:
+                return True
+            if int(getattr(key, "scan_code", 0) or 0) == 0x01:
+                return True
+            name = (getattr(key, "name", None) or getattr(key, "lookup_name", None) or "").replace(" ", "").casefold()
+            if name in ("esc", "escape"):
+                return True
+            if self._esc_key is not None:
+                kt = getattr(key, "key_tuple", None)
+                et = getattr(self._esc_key, "key_tuple", None)
+                if kt is not None and kt == et:
+                    return True
+        return False
+
+    def _abort_now(self):
+        self._aborting = True
+        if self._abort_timer:
+            try:
+                self._abort_timer.cancel()
+            except Exception:
+                pass
+        self.close()
 
     @property
     def accepted(self) -> bool:
@@ -4054,6 +4110,7 @@ class InputListenerWidget(QBoxFrame):
 
         if self._aborting:
             self.close()
+            return
 
         key = gremlin.keyboard.KeyMap.from_event(event)
 
@@ -4063,9 +4120,23 @@ class InputListenerWidget(QBoxFrame):
         if verbose:
             syslog.info(f"LISTEN: Keyboard event: {event} {key}")
 
+        if self._is_escape(event, key):
+            if self._close_on_key:
+                self._abort_now()
+                return
+            if event.is_pressed:
+                if self._abort_timer and not self._abort_timer.is_alive():
+                    self._abort_timer.start()
+            else:
+                if self._abort_timer:
+                    try:
+                        self._abort_timer.cancel()
+                    except Exception:
+                        pass
+                    self._abort_timer = threading.Timer(1.0, self._abort_request)
+            return
+
         if self._close_on_key:
-            if key == self._esc_key:
-                self.close()
             return  # ignore keys otherwise
 
         if not event.is_pressed:
@@ -4079,23 +4150,16 @@ class InputListenerWidget(QBoxFrame):
 
         if not self._multi_keys:
             # single key mode
-            if key == self._esc_key:
-                if not self._abort_timer.is_alive():
-                    self._abort_timer.start()
+            if not self._return_kb_event:
+                self.item_selected.emit([key])
             else:
-                if not self._return_kb_event:
-                    self.item_selected.emit([key])
-                else:
-                    self.item_selected.emit(event)
+                self.item_selected.emit(event)
 
-                self.selection = [key]
-                self._accepted = True
+            self.selection = [key]
+            self._accepted = True
+            if self._abort_timer:
                 self._abort_timer.cancel()
-                self.close()
-
-            if not event.is_pressed and key == self._esc_key:
-                self._abort_timer.cancel()
-                self._abort_timer = threading.Timer(1.0, self._abort_request)
+            self.close()
 
         else:
             # multi-key mode
@@ -4184,24 +4248,15 @@ class InputListenerWidget(QBoxFrame):
 
     def closeEvent(self, evt):
         """Closes the overlay window."""
-
-        event_listener = gremlin.event_handler.EventListener()
-        event_listener.keyboard_event.disconnect(self._kb_event_cb)
-        if InputType.JoystickAxis in self._event_types or InputType.JoystickButton in self._event_types or InputType.JoystickHat in self._event_types:
-            event_listener.joystick_event.disconnect(self._joy_event_cb)
-        if self._listen_mouse:
-            # unhook mouse
-            mh = gremlin.windows_event_hook.MouseHook()
-            mh.unregister(self._mouse_event_cb)
-
-        # restore highlighting
+        if self._abort_timer:
+            try:
+                self._abort_timer.cancel()
+            except Exception:
+                pass
+        self.unhook()
         gremlin.shared_state.pop_suspend_highlighting()
         gremlin.shared_state.pop_suspend_ui_keyinput()
-
-        self.unhook()
         self.closed.emit(self._accepted)
-
-        # print ("input widget close")
         return super().closeEvent(evt)
 
     def _valid_event_types_string(self):

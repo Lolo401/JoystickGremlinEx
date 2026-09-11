@@ -725,7 +725,7 @@ class VisualizerWidget(QtWidgets.QWidget):
 
                         count = self._device.button_count
                         bw = 38 + 8  # width + margin of 4
-                        cols = w // bw
+                        cols = max(1, w // bw)
                         rows = (count + cols - 1) // cols
                         h = rows * bw
 
