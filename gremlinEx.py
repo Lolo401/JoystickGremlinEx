@@ -6242,13 +6242,13 @@ if __name__ == "__main__":
 
 
             commands = [
-                gremlin.voice.VoiceCommand(1, "gear down", test_callback),
-                gremlin.voice.VoiceCommand(2, "gear up", test_callback),
-                gremlin.voice.VoiceCommand(3, "flaps down", test_callback),
-                gremlin.voice.VoiceCommand(4, "flaps up", test_callback),
-                gremlin.voice.VoiceCommand(5, "landing gear down", test_callback),
-                gremlin.voice.VoiceCommand(6, "landing gear up", test_callback),
-                gremlin.voice.VoiceCommand(7, "toggle landing gear", test_callback),
+                gremlin.voice.VoiceCommand("gear down", test_callback),
+                gremlin.voice.VoiceCommand("gear up", test_callback),
+                gremlin.voice.VoiceCommand("flaps down", test_callback),
+                gremlin.voice.VoiceCommand("flaps up", test_callback),
+                gremlin.voice.VoiceCommand("landing gear down", test_callback),
+                gremlin.voice.VoiceCommand("landing gear up", test_callback),
+                gremlin.voice.VoiceCommand("toggle landing gear", test_callback),
 
             ]
             voice = gremlin.voice.Voice(commands=commands)

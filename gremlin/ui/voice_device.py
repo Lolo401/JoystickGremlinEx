@@ -43,9 +43,10 @@ from shiboken6 import Shiboken
 import html
 from typing import Callable
 
-from faster_whisper import WhisperModel
+from gremlin.voice import VoiceCommand, Voice
 
 syslog = logging.getLogger("system")
+
 
 class VoiceInputItem(InputItem):
     """holds a single speech recognition input"""
@@ -53,10 +54,10 @@ class VoiceInputItem(InputItem):
     def __init__(
         self,
         key: str = None,
-        text : str = None,
+        text: str = None,
         description=None,
         data=None,
-        ):
+    ):
 
         master_mode = gremlin.shared_state.master_mode
         self._emit = True
@@ -73,8 +74,11 @@ class VoiceInputItem(InputItem):
 
         self._key = key  # ok if None (blank)
         self._text = text
-        self._phrases_map = {} # map of phrase by hash value
+        self._phrases_map = {}  # map of phrase by hash value
         self._hooked = False
+
+        self._command_map = {}
+
         super().__init__(
             mode_node=mode_object,
             device_guid=VoiceDeviceTabWidget.device_guid,
@@ -82,6 +86,60 @@ class VoiceInputItem(InputItem):
             custom_input_id_handler=self._handle_input_id_callback,
         )
 
+        self._update_commands()
+
+    @property
+    def commands(self) -> list[VoiceCommand]:
+        """gets the list of voice commands in this voice input"""
+        return list(self._command_map.values())
+
+    def _update_commands(self):
+        """builds voice commands from the input phrase if it has multiple phrases separated by '|'"""
+        self._command_map.clear()
+        if self._text:
+            phrases = self._text.split("|")
+            for phrase in phrases:
+                command = VoiceCommand(phrase=phrase, callback=self._handle_voice_trigger, owner=self)
+                self._command_map[command.key] = command
+
+
+    def _handle_voice_trigger(self, vc):
+        if vc.owner != self:
+            # not ours
+            return
+        if self._emit:
+            self._last_triggered_command = vc
+            syslog.info(f"VOICE: triggered [{self._key}] with phrase [{vc.phrase}]")
+            # handle the voice command here
+            event = gremlin.event_handler.Event(
+                event_type=InputType.Voice,
+                value=True,
+                is_pressed=True,
+                identifier=self,
+                device_guid=VoiceDeviceTabWidget.device_guid,
+                override_input_type=InputType.JoystickButton,
+            )
+            config = gremlin.config.Configuration()
+            el = gremlin.event_handler.EventListener()
+            el.queueJoystickEvent(event)
+
+            timer = threading.Timer(config.voice_command_release_delay, self._trigger_release_event)
+            timer.start()
+
+    def _trigger_release_event(self):
+        if self._emit:
+            syslog.info(f"VOICE: triggered [{self._key}] with phrase [{self._last_triggered_command.phrase}]")
+            # handle the voice command here
+            event = gremlin.event_handler.Event(
+                event_type=InputType.Voice,
+                value=True,
+                is_pressed=False,
+                identifier=self,
+                device_guid=VoiceDeviceTabWidget.device_guid,
+                override_input_type=InputType.JoystickButton,
+            )
+            el = gremlin.event_handler.EventListener()
+            el.queueJoystickEvent(event)
 
     def suppressEvents(self):
         """disable events"""
@@ -95,13 +153,13 @@ class VoiceInputItem(InputItem):
         """clones the input item (gives it a new ID)"""
 
         return VoiceInputItem(
-            key = self.key,
-            text = self.text,
-            description = self.description,
+            key=self.key,
+            text=self.text,
+            description=self.description,
         )
 
     def _handle_input_id_callback(self):
-        """input id is self for a voice input """
+        """input id is self for a voice input"""
         return self
 
     def hook(self):
@@ -145,14 +203,6 @@ class VoiceInputItem(InputItem):
     @key.setter
     def key(self, value: str):
         pass
-        # value = value.casefold().strip()
-        # if self._key != value:
-        #     old_name = self._key
-        #     self._key = value
-        #     if self._emit:
-        #         self.key_changed.emit(self, old_name, value)
-        #         sd = VoiceData()
-        #         sd.update_key(self, old_name, value)
 
     @property
     def message_key(self):
@@ -161,15 +211,12 @@ class VoiceInputItem(InputItem):
     @property
     def text(self) -> str:
         return self._text
+
     @text.setter
     def text(self, value: str):
         self._text = value
-        # split into phrases
-        phrases = [phrase.strip().casefold() for phrase in value.split("|") if phrase.strip()]
-        if phrases:
-            self._phrase_map = {hash(phrase): phrase for phrase in phrases}
-        else:
-            self._phrase_map.clear()
+        # rebuild command list
+        self._update_commands()
 
     def matchText(self, text: str) -> bool:
         """check if the given text matches any of the stored phrases"""
@@ -186,7 +233,6 @@ class VoiceInputItem(InputItem):
         description = self.description
 
         node.set("id", write_guid(self._id))
-
 
         if description:
             node.set("description", html.escape(description))
@@ -218,7 +264,6 @@ class VoiceInputItem(InputItem):
         self._text = text
 
 
-
 class VoiceInputItemModel(gremlin.input_item.InputItemListModel):
     """data model for state inputs"""
 
@@ -245,11 +290,12 @@ class VoiceInputItemModel(gremlin.input_item.InputItemListModel):
         if item_changed_handler:
             self.addOnItemChangedCallback(item_changed_handler)
 
+
 @SingletonDecorator
 class VoiceData:
     """holds voice information"""
-    crud = Signal()  # fires when a voice input is added or removed or changed
 
+    crud = Signal()  # fires when a voice input is added or removed or changed
 
     def __init__(self):
         self._data = {}
@@ -259,18 +305,9 @@ class VoiceData:
         el.profile_start.connect(self._reset)
         el.profile_unloaded.connect(self._handle_profile_unload)
 
-
-        model_size = "base"   # Options: "tiny", "base", "small", "medium", "large-v3"
-
-        # Run on GPU with FP16
-        #self.engine = WhisperModel(model_size, device="cuda", compute_type="float16")
-        self.engine = WhisperModel(model_size, device="cpu", compute_type="int8")
-
-
     def _reset(self):
-        """reset voices """
+        """reset voices"""
         pass
-
 
     def _handle_profile_unload(self):
         """occurs on profile unload before a new profile is loaded"""
@@ -408,8 +445,6 @@ class VoiceData:
                 if node is not None:
                     root.append(node)
 
-
-
         return root
 
     def __deepcopy__(self, memo):
@@ -465,9 +500,8 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
         self._name_widget.setText(input_item.key)
         self._name_widget.textChanged.connect(self._name_changed)
 
-
         self._text_widget = QtWidgets.QPlainTextEdit()
-        #self._text_widget.setAcceptRichText(False)
+        # self._text_widget.setAcceptRichText(False)
         self._text_widget.setMinimumWidth(200)
         self._text_widget.setPlainText(input_item.text)
 
@@ -492,12 +526,10 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
         self._config_layout.addWidget(QtWidgets.QLabel("Description:"), row, col)
         self._config_layout.addWidget(self._description_widget, row, col + 1)
 
-
         row += 1
         self._config_layout.addWidget(QtWidgets.QLabel("Voice Command:"), row, col)
         row += 1
         self._config_layout.addWidget(self._text_widget, row, col, 1, -1)
-
 
         main_layout.addWidget(self._config_widget)
 
@@ -518,8 +550,6 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
     def editMode(self) -> bool:
         """true if the dialog was called in edit mode"""
         return self._is_edit
-
-
 
     def _set_status(self, text: str):
         """sets the status text"""
@@ -551,8 +581,6 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
                 enabled = False
                 msg = "Name is not case sensitive and must be unique."
 
-
-
         self.ok_widget.setEnabled(enabled)
         self._set_status(msg)
 
@@ -576,7 +604,6 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
         # ensure the item is unique and not already used
 
         key = self.data.key
-
 
         if key:
             key_low = self.data.key.casefold().strip()
@@ -610,19 +637,17 @@ class VoiceInputConfigDialog(gremlin.ui.ui_common.QShowAtCursorDialog):
         self._status_widget.setVisible(bool(self._status_widget.text()))
 
 
-
-
 class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
     # IMPORTANT: MUST BE A DID FORMATTED ID ON CUSTOM INPUTS
     device_guid = gremlin.shared_state.voice_tab_guid
 
     def __init__(
-            self,
-            profile: gremlin.base_profile.Profile,
-            mode: str,
-            object_name="Voice Device",
-            parent=None,
-            ):
+        self,
+        profile: gremlin.base_profile.Profile,
+        mode: str,
+        object_name="Voice Device",
+        parent=None,
+    ):
         """Creates a new object instance.
 
         :param profile profile data of the entire device
@@ -642,7 +667,6 @@ class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         )
 
         self._widget_map = {}
-
 
         button_container_widget = QtWidgets.QWidget()
         button_container_layout = QtWidgets.QHBoxLayout(button_container_widget)
@@ -701,7 +725,6 @@ class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
 
         # right align
         button_container_layout.addStretch(1)
-
 
         # sort states
         sort_button = QtWidgets.QPushButton("Sort")
@@ -805,7 +828,6 @@ class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         model.pushSuspend()
         model.clear(emit=False)
 
-
         changed = False
         index = 0
         for key in keys:
@@ -904,8 +926,6 @@ class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
         gremlin.util.assert_ui_thread()
         self.refresh()
 
-
-
     def getOverrideInputType(self):
         """override type"""
         return InputType.JoystickButton
@@ -971,7 +991,6 @@ class VoiceDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
                 input_item.key = edited_input_item.key
                 input_item.setDescription(edited_input_item.description)
                 input_item.text = edited_input_item.text
-
 
                 self.inputItemListModel.refresh()
                 self._filter_widget.updateCounts()

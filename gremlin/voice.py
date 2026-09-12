@@ -57,7 +57,6 @@ SAMPLE_RATE = 16000  # Hz
 TRIGGER_KEY = "space"  # Key to trigger recording
 
 
-
 def audio_level_db(audio):
     """Return RMS audio level in dBFS."""
     audio = np.asarray(audio, dtype=np.float32)
@@ -74,7 +73,7 @@ def audio_level_db(audio):
 
 
 def apply_gain(audio, gain_db):
-    """ applies gain in decibels to the audio signal."""
+    """applies gain in decibels to the audio signal."""
     gain = 10.0 ** (gain_db / 20.0)
 
     # prevent clipping
@@ -102,23 +101,19 @@ class SpeechAudioProcessor:
         self,
         sample_rate=16000,
         blocksize=1600,
-
         # AGC
         target_db=-20.0,
         max_gain_db=20.0,
         gain_attack=0.20,
         gain_release=0.03,
-
         # Noise estimation
         initial_noise_db=-60.0,
         noise_alpha=0.02,
-
         # VAD
         speech_margin_db=10.0,
         min_speech_db=-50.0,
         speech_attack_blocks=2,
         speech_release_blocks=2,
-
         # Pre/post roll
         pre_roll_ms=300,
         post_roll_ms=400,
@@ -154,30 +149,20 @@ class SpeechAudioProcessor:
         # Convert milliseconds to block counts
         # -----------------------------------------------------
 
-        block_ms = (
-            blocksize
-            / sample_rate
-            * 1000.0
-        )
+        block_ms = blocksize / sample_rate * 1000.0
 
         self.pre_roll_blocks = max(
             1,
-            int(np.ceil(
-                pre_roll_ms / block_ms
-            )),
+            int(np.ceil(pre_roll_ms / block_ms)),
         )
 
         self.post_roll_blocks = max(
             0,
-            int(np.ceil(
-                post_roll_ms / block_ms
-            )),
+            int(np.ceil(post_roll_ms / block_ms)),
         )
 
         # Rolling audio before speech begins.
-        self.pre_roll = deque(
-            maxlen=self.pre_roll_blocks
-        )
+        self.pre_roll = deque(maxlen=self.pre_roll_blocks)
 
         # Remaining post-roll blocks.
         self.post_roll_remaining = 0
@@ -193,8 +178,7 @@ class SpeechAudioProcessor:
     def _speech_threshold(self):
         return max(
             self.min_speech_db,
-            self.noise_floor_db
-            + self.speech_margin_db,
+            self.noise_floor_db + self.speech_margin_db,
         )
 
     def _update_noise_floor(self, level_db):
@@ -210,16 +194,10 @@ class SpeechAudioProcessor:
             return
 
         # Don't learn obvious speech/transients as noise.
-        if (
-            level_db
-            > self.noise_floor_db
-            + self.speech_margin_db
-        ):
+        if level_db > self.noise_floor_db + self.speech_margin_db:
             return
 
-        self.noise_floor_db += (
-            level_db - self.noise_floor_db
-        ) * self.noise_alpha
+        self.noise_floor_db += (level_db - self.noise_floor_db) * self.noise_alpha
 
     def _detect_speech(self, level_db):
         """
@@ -228,30 +206,20 @@ class SpeechAudioProcessor:
 
         threshold_db = self._speech_threshold()
 
-        raw_speech = (
-            level_db >= threshold_db
-        )
+        raw_speech = level_db >= threshold_db
 
         if raw_speech:
-
             self.speech_counter += 1
             self.silence_counter = 0
 
-            if (
-                self.speech_counter
-                >= self.speech_attack_blocks
-            ):
+            if self.speech_counter >= self.speech_attack_blocks:
                 self.is_speech = True
 
         else:
-
             self.silence_counter += 1
             self.speech_counter = 0
 
-            if (
-                self.silence_counter
-                >= self.speech_release_blocks
-            ):
+            if self.silence_counter >= self.speech_release_blocks:
                 self.is_speech = False
 
         return self.is_speech, threshold_db
@@ -281,9 +249,7 @@ class SpeechAudioProcessor:
         else:
             rate = self.gain_release
 
-        self.gain_db += (
-            desired_gain - self.gain_db
-        ) * rate
+        self.gain_db += (desired_gain - self.gain_db) * rate
 
     # ---------------------------------------------------------
     # Main processing
@@ -328,19 +294,11 @@ class SpeechAudioProcessor:
         # VAD
         # -----------------------------------------------------
 
-        is_speech, threshold_db = (
-            self._detect_speech(level_db)
-        )
+        is_speech, threshold_db = self._detect_speech(level_db)
 
-        vad_started = (
-            is_speech
-            and not was_speech
-        )
+        vad_started = is_speech and not was_speech
 
-        vad_stopped = (
-            was_speech
-            and not is_speech
-        )
+        vad_stopped = was_speech and not is_speech
 
         # -----------------------------------------------------
         # AGC
@@ -363,22 +321,18 @@ class SpeechAudioProcessor:
         # -----------------------------------------------------
 
         if vad_started:
-
             # If we were already in post-roll, speech resumed.
             # This is the same utterance.
             if self.in_utterance:
-
                 self.post_roll_remaining = 0
 
                 output_audio = processed
 
             else:
-
                 self.in_utterance = True
                 speech_started = True
 
                 if self.pre_roll:
-
                     output_audio = np.concatenate(
                         [
                             *self.pre_roll,
@@ -396,7 +350,6 @@ class SpeechAudioProcessor:
         # -----------------------------------------------------
 
         elif is_speech:
-
             self.in_utterance = True
 
             # Any renewed speech cancels post-roll.
@@ -409,22 +362,17 @@ class SpeechAudioProcessor:
         # -----------------------------------------------------
 
         elif vad_stopped and self.in_utterance:
-
             #
             # Current block is the first post-roll block.
             #
-            self.post_roll_remaining = (
-                self.post_roll_blocks
-            )
+            self.post_roll_remaining = self.post_roll_blocks
 
             if self.post_roll_remaining > 0:
-
                 output_audio = processed
 
                 self.post_roll_remaining -= 1
 
             else:
-
                 self.in_utterance = False
                 speech_ended = True
 
@@ -432,17 +380,12 @@ class SpeechAudioProcessor:
         # Continue post-roll
         # -----------------------------------------------------
 
-        elif (
-            self.in_utterance
-            and self.post_roll_remaining > 0
-        ):
-
+        elif self.in_utterance and self.post_roll_remaining > 0:
             output_audio = processed
 
             self.post_roll_remaining -= 1
 
             if self.post_roll_remaining == 0:
-
                 self.in_utterance = False
                 speech_ended = True
 
@@ -451,30 +394,23 @@ class SpeechAudioProcessor:
         # -----------------------------------------------------
 
         else:
-
             self.in_utterance = False
 
             #
             # Save recent audio for the next pre-roll.
             #
-            self.pre_roll.append(
-                processed.copy()
-            )
+            self.pre_roll.append(processed.copy())
 
         info = {
             "level_db": level_db,
             "noise_db": self.noise_floor_db,
             "threshold_db": threshold_db,
             "gain_db": self.gain_db,
-
             "is_speech": is_speech,
             "in_utterance": self.in_utterance,
-
             "speech_started": speech_started,
             "speech_ended": speech_ended,
-
-            "post_roll_remaining":
-                self.post_roll_remaining,
+            "post_roll_remaining": self.post_roll_remaining,
         }
 
         return output_audio, info
@@ -500,7 +436,7 @@ class SpeechRecognizer:
         sample_rate=16000,
         device="cpu",
         compute_type="int8",
-        callback : Callable =None,
+        callback: Callable = None,
     ):
         self.sample_rate = sample_rate
         self.callback = callback
@@ -537,10 +473,7 @@ class SpeechRecognizer:
         self._abort_event.set()
         self._queue.put(None)
 
-        self._thread.join(
-            timeout=2.0
-        )
-
+        self._thread.join(timeout=2.0)
 
     def add_audio(
         self,
@@ -556,10 +489,14 @@ class SpeechRecognizer:
         """
 
         if audio is not None:
-            audio = np.asarray(
-                audio,
-                dtype=np.float32,
-            ).reshape(-1).copy()
+            audio = (
+                np.asarray(
+                    audio,
+                    dtype=np.float32,
+                )
+                .reshape(-1)
+                .copy()
+            )
 
         # syslog.info(f"adding audio to recognize queue started: {speech_started}, ended: {speech_ended}")
         self._queue.put(
@@ -577,7 +514,6 @@ class SpeechRecognizer:
     def _worker(self, abort_event):
 
         while not abort_event.is_set():
-
             item = self._queue.get()
 
             # syslog.info(f"Recog: has data: {item is not None}")
@@ -612,32 +548,24 @@ class SpeechRecognizer:
         if not self._audio:
             return
 
-        audio = np.concatenate(
-            self._audio
-        )
+        audio = np.concatenate(self._audio)
 
         self._audio.clear()
 
         # Ignore extremely short utterances.
-        duration = (
-            len(audio)
-            / self.sample_rate
-        )
+        duration = len(audio) / self.sample_rate
 
         # syslog.info(f"\nDuration: {duration}")
 
         if duration < 0.15:
             return
 
-
         # syslog.info("\ntranscribe")
         segments, info = self.model.transcribe(
             audio,
             language="en",
-
             # Your own VAD already determined the utterance.
             vad_filter=False,
-
             beam_size=1,
             condition_on_previous_text=False,
         )
@@ -653,7 +581,6 @@ class SpeechRecognizer:
             self.callback(words)
 
 
-
 class WindowsMicrophoneVolume:
     def __init__(self, sounddevice_index=None):
         if sounddevice_index is None:
@@ -664,15 +591,10 @@ class WindowsMicrophoneVolume:
 
         self.sounddevice_name = self.sd_info["name"]
 
-        self.device = self._find_capture_device(
-            self.sounddevice_name
-        )
+        self.device = self._find_capture_device(self.sounddevice_name)
 
         if self.device is None:
-            raise RuntimeError(
-                f"Could not find Windows capture endpoint for "
-                f"sounddevice '{self.sounddevice_name}'"
-            )
+            raise RuntimeError(f"Could not find Windows capture endpoint for sounddevice '{self.sounddevice_name}'")
 
         self.volume = self.device.EndpointVolume
 
@@ -689,11 +611,7 @@ class WindowsMicrophoneVolume:
         best_match = None
 
         for device in devices:
-            friendly_name = getattr(
-                device,
-                "FriendlyName",
-                ""
-            )
+            friendly_name = getattr(device, "FriendlyName", "")
 
             if not friendly_name:
                 continue
@@ -701,10 +619,7 @@ class WindowsMicrophoneVolume:
             friendly_lower = friendly_name.lower()
 
             # Simple matching strategy.
-            if (
-                name in friendly_lower
-                or friendly_lower in name
-            ):
+            if name in friendly_lower or friendly_lower in name:
                 best_match = device
                 break
 
@@ -714,9 +629,7 @@ class WindowsMicrophoneVolume:
         """
         Return microphone volume from 0.0 to 1.0.
         """
-        return float(
-            self.volume.GetMasterVolumeLevelScalar()
-        )
+        return float(self.volume.GetMasterVolumeLevelScalar())
 
     def get_volume_percent(self):
         return self.get_volume() * 100.0
@@ -726,10 +639,7 @@ class WindowsMicrophoneVolume:
         value: 0.0 ... 1.0
         """
 
-        value = max(
-            0.0,
-            min(1.0, float(value))
-        )
+        value = max(0.0, min(1.0, float(value)))
 
         self.volume.SetMasterVolumeLevelScalar(
             value,
@@ -737,14 +647,10 @@ class WindowsMicrophoneVolume:
         )
 
     def set_volume_percent(self, percent):
-        self.set_volume(
-            percent / 100.0
-        )
+        self.set_volume(percent / 100.0)
 
     def get_mute(self):
-        return bool(
-            self.volume.GetMute()
-        )
+        return bool(self.volume.GetMute())
 
     def set_mute(self, muted):
         self.volume.SetMute(
@@ -761,6 +667,7 @@ class WindowsMicrophoneVolume:
         """
         return self.volume.GetVolumeRange()
 
+
 DEFAULT_FILLER_WORDS = {
     # Articles / politeness
     "a",
@@ -768,7 +675,6 @@ DEFAULT_FILLER_WORDS = {
     "the",
     "please",
     "kindly",
-
     # Hesitation
     "uh",
     "um",
@@ -778,7 +684,6 @@ DEFAULT_FILLER_WORDS = {
     "er",
     "hmm",
     "hm",
-
     # Conversational filler
     "actually",
     "basically",
@@ -790,23 +695,25 @@ DEFAULT_FILLER_WORDS = {
     "anyway",
     "anyways",
     "well",
-
     # Greetings / padding
     "hey",
     "hello",
     "hi",
 }
 
+
 class VoiceCommand:
-    """ holds voice command information including a callback called when the command is triggered """
-    def __init__(self, key, phrase, callback=None):
-        self.key = key
+    """holds voice command information including a callback called when the command is triggered"""
+
+    def __init__(self, phrase, callback=None, key = None, owner = None):
+        self.key = key if key is not None else gremlin.util.get_guid()
         self.phrase = phrase
         self.callback = callback
+        self.owner = owner
         self.meaningful_length = None
 
     @property
-    def key(self):
+    def key(self) -> str:
         return self._key
 
     @key.setter
@@ -822,23 +729,31 @@ class VoiceCommand:
         self._phrase = value
 
     @property
-    def callback(self):
+    def callback(self) -> Callable[[VoiceCommand], None]:
         return self._callback
 
     @callback.setter
     def callback(self, value):
         self._callback = value
 
+    @property
+    def owner(self) -> str:
+        return self._owner
+
+    @owner.setter
+    def owner(self, value):
+        self._owner = value
 
     def trigger(self):
-        """ triggers the command callback """
+        """triggers the command callback"""
         if self.callback is not None:
             self.callback(self)
 
     def __str__(self):
         return f"VoiceCommand(key={self.key}, phrase={self.phrase})"
 
-class RollingPhraseMatcher:
+
+class CommandMatcher:
     """
     Match a rolling stream of recognized speech words against
     a fixed list of command phrases.
@@ -857,14 +772,14 @@ class RollingPhraseMatcher:
         commands,
         *,
         filler_words=None,
-        fuzzy_match = True,
+        fuzzy_match=True,
         fuzzy_threshold=95,
         word_threshold=60,
         gap_penalty=25,
         filler_penalty=2,
         swap_penalty=10,
         max_extra_words=5,
-        callback : Callable = None,
+        callback: Callable = None,
     ):
         self.fuzzy_match = fuzzy_match
         self.fuzzy_threshold = fuzzy_threshold
@@ -873,26 +788,19 @@ class RollingPhraseMatcher:
         self.filler_penalty = filler_penalty
         self.swap_penalty = swap_penalty
         self.max_extra_words = max_extra_words
-        self.callback = callback # called when a command is matched
+        self.callback = callback  # called when a command is matched
 
-        self.filler_words = {
-            word.lower()
-            for word in (
-                filler_words
-                if filler_words is not None
-                else DEFAULT_FILLER_WORDS
-            )
-        }
+        self.filler_words = {word.lower() for word in (filler_words if filler_words is not None else DEFAULT_FILLER_WORDS)}
 
-
-        self._command_map = {} # holds the commands
+        self._command_map = {}  # holds the commands
         for command in commands:
-
             if isinstance(command, VoiceCommand):
                 vc = command
             else:
                 # command as a string
-                vc = VoiceCommand(gremlin.util.get_guid(), command)
+                vc = VoiceCommand(command)
+
+
             words = self._tokenize(vc.phrase)
 
             vc.meaningful_length = self._meaningful_length(words)
@@ -911,32 +819,26 @@ class RollingPhraseMatcher:
             reverse=True,
         )
 
-        self._max_command_words = max(
-            len(command.words)
-            for command in self._commands
-        )
+        self._max_command_words = max(len(command.words) for command in self._commands)
 
-        self._buffer = deque(
-            maxlen=self._max_command_words + self.max_extra_words
-        )
+        self._buffer = deque(maxlen=self._max_command_words + self.max_extra_words)
 
-    def addCommand(self, command : Union[VoiceCommand, str]):
-        """ adds a new command to the voice command list
+    def addCommand(self, command: Union[VoiceCommand, str]):
+        """adds a new command to the voice command list
 
         :param command: The command to add. Can be a VoiceCommand instance or a string representing the phrase.  If a voice command, callback will be called when a match occurs with the key.
         """
         if isinstance(command, VoiceCommand):
             vc = command
         else:
-            vc = VoiceCommand(gremlin.util.get_guid(), command)
+            vc = VoiceCommand(command)
         vc.words = self._tokenize(vc.phrase)
         vc.meaningful_length = self._meaningful_length(vc.words)
         self._command_map[vc.key] = vc
         self._update_commands()
 
-
     def add_words(self, words):
-        """ adds multiple heard words to the matcher """
+        """adds multiple heard words to the matcher"""
         for word in words:
             self.add_word(word)
 
@@ -958,7 +860,6 @@ class RollingPhraseMatcher:
 
         words = list(self._buffer)
 
-
         # exact matching
         exact = self._find_exact_match(words)
 
@@ -969,7 +870,6 @@ class RollingPhraseMatcher:
 
             command.trigger()
             return command
-
 
         if not self.fuzzy_match:
             # no fuzzy match
@@ -1013,10 +913,7 @@ class RollingPhraseMatcher:
                     best_command = command
                     best_start = start
 
-        if (
-            best_command is not None
-            and best_score >= self.fuzzy_threshold
-        ):
+        if best_command is not None and best_score >= self.fuzzy_threshold:
             self._consume_from(best_start)
 
             best_command.trigger()
@@ -1069,17 +966,9 @@ class RollingPhraseMatcher:
         Compare two word sequences after removing filler words.
         """
 
-        spoken = [
-            word
-            for word in spoken
-            if not self._is_filler(word)
-        ]
+        spoken = [word for word in spoken if not self._is_filler(word)]
 
-        target = [
-            word
-            for word in target
-            if not self._is_filler(word)
-        ]
+        target = [word for word in target if not self._is_filler(word)]
 
         return spoken == target
 
@@ -1108,10 +997,7 @@ class RollingPhraseMatcher:
 
         inf = float("inf")
 
-        dp = [
-            [inf] * (m + 1)
-            for _ in range(n + 1)
-        ]
+        dp = [[inf] * (m + 1) for _ in range(n + 1)]
 
         dp[0][0] = 0.0
 
@@ -1120,27 +1006,19 @@ class RollingPhraseMatcher:
         # -----------------------------------------------------
 
         for i in range(1, n + 1):
-            dp[i][0] = (
-                dp[i - 1][0]
-                + self._gap_cost(spoken[i - 1])
-            )
+            dp[i][0] = dp[i - 1][0] + self._gap_cost(spoken[i - 1])
 
         for j in range(1, m + 1):
-            dp[0][j] = (
-                dp[0][j - 1]
-                + self._gap_cost(target[j - 1])
-            )
+            dp[0][j] = dp[0][j - 1] + self._gap_cost(target[j - 1])
 
         # -----------------------------------------------------
         # Dynamic alignment
         # -----------------------------------------------------
 
         for i in range(1, n + 1):
-
             spoken_word = spoken[i - 1]
 
             for j in range(1, m + 1):
-
                 target_word = target[j - 1]
 
                 # ---------------------------------------------
@@ -1160,28 +1038,19 @@ class RollingPhraseMatcher:
                 if similarity < self.word_threshold:
                     substitution_cost += self.gap_penalty
 
-                substitution = (
-                    dp[i - 1][j - 1]
-                    + substitution_cost
-                )
+                substitution = dp[i - 1][j - 1] + substitution_cost
 
                 # ---------------------------------------------
                 # Extra spoken word
                 # ---------------------------------------------
 
-                insertion = (
-                    dp[i - 1][j]
-                    + self._gap_cost(spoken_word)
-                )
+                insertion = dp[i - 1][j] + self._gap_cost(spoken_word)
 
                 # ---------------------------------------------
                 # Missing spoken word
                 # ---------------------------------------------
 
-                deletion = (
-                    dp[i][j - 1]
-                    + self._gap_cost(target_word)
-                )
+                deletion = dp[i][j - 1] + self._gap_cost(target_word)
 
                 dp[i][j] = min(
                     substitution,
@@ -1200,7 +1069,6 @@ class RollingPhraseMatcher:
                 # ---------------------------------------------
 
                 if i >= 2 and j >= 2:
-
                     s1 = spoken[i - 2]
                     s2 = spoken[i - 1]
 
@@ -1210,21 +1078,10 @@ class RollingPhraseMatcher:
                     score1 = fuzz.ratio(s1, t2)
                     score2 = fuzz.ratio(s2, t1)
 
-                    if (
-                        score1 >= self.word_threshold
-                        and
-                        score2 >= self.word_threshold
-                    ):
-                        swap_cost = (
-                            (100 - score1)
-                            + (100 - score2)
-                            + self.swap_penalty
-                        )
+                    if score1 >= self.word_threshold and score2 >= self.word_threshold:
+                        swap_cost = (100 - score1) + (100 - score2) + self.swap_penalty
 
-                        swap = (
-                            dp[i - 2][j - 2]
-                            + swap_cost
-                        )
+                        swap = dp[i - 2][j - 2] + swap_cost
 
                         dp[i][j] = min(
                             dp[i][j],
@@ -1245,9 +1102,7 @@ class RollingPhraseMatcher:
 
         max_penalty = meaningful_length * 100
 
-        score = 100 * (
-            1 - penalty / max_penalty
-        )
+        score = 100 * (1 - penalty / max_penalty)
 
         return max(
             0.0,
@@ -1274,18 +1129,10 @@ class RollingPhraseMatcher:
         return word in self.filler_words
 
     def _meaningful_length(self, words):
-        return sum(
-            1
-            for word in words
-            if not self._is_filler(word)
-        )
+        return sum(1 for word in words if not self._is_filler(word))
 
     def _tokenize(self, text):
-        return [
-            self._clean_word(word)
-            for word in text.split()
-            if self._clean_word(word)
-        ]
+        return [self._clean_word(word) for word in text.split() if self._clean_word(word)]
 
     @staticmethod
     def _clean_word(word):
@@ -1293,12 +1140,7 @@ class RollingPhraseMatcher:
         Basic cleanup for speech-recognition tokens.
         """
 
-        return (
-            word
-            .lower()
-            .strip()
-            .strip(".,!?;:\"'()[]{}")
-        )
+        return word.lower().strip().strip(".,!?;:\"'()[]{}")
 
     def _consume_from(self, start):
         """
@@ -1311,22 +1153,23 @@ class RollingPhraseMatcher:
 
         self._buffer.clear()
 
-        self._buffer.extend(
-            words[:start]
-        )
+        self._buffer.extend(words[:start])
+
 
 @gremlin.singleton_decorator.SingletonDecorator
 class Voice:
     """speech recognition engine"""
 
-    def __init__(self, commands : list = None,
-                 fuzzy_match=False,
-                 fuzzy_threshold=95,
-                ):
+    def __init__(
+        self,
+        commands: list = None,
+        fuzzy_match=False,
+        fuzzy_threshold=95,
+    ):
         os.environ["HF_HUB_VERBOSITY"] = "error"
         self._voice_lock = threading.RLock()
         self._audio_lock = threading.RLock()  # lock when adding new recognized words
-        self._model_size = "small" # "base" #  possible models: "tiny", "base", "small", "medium", "large-v3"
+        self._model_size = "small"  # "base" #  possible models: "tiny", "base", "small", "medium", "large-v3"
         self._listening = False  # true if actively listening for voice input
         self._suspend_stack = 0  # > 1 if listening suspended
         self._listen_thread = None  # thread for listening to voice input
@@ -1339,19 +1182,15 @@ class Voice:
         self._words = []  # words heard
         self._new_word = False  # flag to indicate if a new word has been added
 
-        self._rolling_matcher = RollingPhraseMatcher(commands = commands,
-                                                     fuzzy_match = fuzzy_match,
-                                                     fuzzy_threshold = fuzzy_threshold)
-
+        self._rolling_matcher = CommandMatcher(commands=commands, fuzzy_match=fuzzy_match, fuzzy_threshold=fuzzy_threshold)
 
         el = gremlin.event_handler.EventListener()
         el.profile_start.connect(self.start)
         el.profile_stop.connect(self.stop)
 
-    def addCommand(self, command : VoiceCommand):
+    def addCommand(self, command: VoiceCommand):
         if command is not None:
             self._rolling_matcher.addCommand(command)
-
 
     def pushSuspend(self):
         """increment the suspend stack to suspend listening"""
@@ -1402,7 +1241,6 @@ class Voice:
 
         self.recognizer.start()
 
-
         with self._voice_lock:
             if self._suspend_stack == 0:  # not suspended
                 self._listening = True
@@ -1415,7 +1253,7 @@ class Voice:
             else:
                 self._listening = False
 
-    def _on_recognized(self, words : list[str]):
+    def _on_recognized(self, words: list[str]):
         """callback when speech is recognized"""
         self._rolling_matcher.add_words(words)
 
@@ -1461,4 +1299,3 @@ class Voice:
             # Keep the stream open until the trigger key is pressed
             while not abort_event.is_set():
                 time.sleep(0.01)  # Small sleep to prevent high CPU usage in the loop
-

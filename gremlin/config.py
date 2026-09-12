@@ -3554,3 +3554,12 @@ class Configuration(QtCore.QObject):
     @use_v2_macro_mode.setter
     def use_v2_macro_mode(self, value: bool):
         self._set_data("use_v2_macro_mode", value)
+
+    @property
+    def voice_command_release_delay(self) -> int:
+        """ delay in milliseconds before releasing a voice command event """
+        return self._get_data("voice_command_release_delay", 250)  # default to 250 ms
+
+    @voice_command_release_delay.setter
+    def voice_command_release_delay(self, value: int):
+        self._set_data("voice_command_release_delay", value)
