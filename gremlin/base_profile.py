@@ -3407,6 +3407,8 @@ class Profile:
             # plugins
             plugins = gremlin.shared_state.current_profile.plugins
             return len(plugins) > 0
+        elif device_guid == gremlin.shared_state.overlay_tab_guid:
+            return True
         elif device_guid == gremlin.shared_state.keyboard_tab_guid:
             look_for_containers = False
 
@@ -4783,7 +4785,7 @@ class Profile:
                 backup_file = os.path.join(backup_path, f"{base_name}.{backup_count}.xml")
                 try:
                     shutil.copyfile(use_name, backup_file)
-                    ext_list = ["json", ".calib"]
+                    ext_list = ["json", ".calib", "overlay.json"]
                     for ext in ext_list:
                         json_source = gremlin.util.swap_ext(use_name, ext)
                         json_target = gremlin.util.swap_ext(backup_file, ext)
@@ -4804,6 +4806,12 @@ class Profile:
                 self.to_xml(use_name)
                 if verbose:
                     syslog.info(f"SAVE: [{gremlin.util.toUrl(self._profile_fname)}]")
+                try:
+                    import gremlin.ui.obs_overlay as obs_overlay
+
+                    obs_overlay.persist_for_profile(self)
+                except Exception:
+                    pass
 
             except Exception as err:
                 syslog.error(f"SAVE: error: [{gremlin.util.toUrl(self._profile_fname)}]")
@@ -6042,6 +6050,8 @@ class PluginVariable:
         """true if the variable is configured"""
         if self.type is None or self.name is None:
             return False
+        if self.type == PluginVariableType.Action:
+            return True
         if self.type == PluginVariableType.PhysicalInput:
             if self.value and "device_id" in self.value:
                 return self.value["device_id"] is not None
@@ -6106,9 +6116,14 @@ class PluginVariable:
                     "input_id": safe_read(node, "input-id", int, 1),
                     "input_type": InputType.to_enum(safe_read(node, "input-type", str, "")),
                 }
+        elif self.type == PluginVariableType.Action:
+            self.value = None
 
     def to_xml(self):
         """read user plugin saved variable data"""
+
+        if self.type == PluginVariableType.Action:
+            return None
 
         node = etree.Element("variable")
         node.set("name", safe_format(self.name, str))

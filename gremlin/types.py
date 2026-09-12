@@ -288,6 +288,7 @@ class DeviceType(IntEnum):
     Maestro = 11  # maestro special device
     StreamDeck = 12  # Elgato Stream Deck via plugin bridge
     Voice = 13  # voice special device
+    Overlay = 14  # OBS / on-screen overlay designer tab
 
     @staticmethod
     def isFixedInput(value: DeviceType) -> bool:
@@ -305,6 +306,7 @@ class DeviceType(IntEnum):
             DeviceType.NotSet,
             DeviceType.Settings,
             DeviceType.Plugins,
+            DeviceType.Overlay,
         )
 
     @staticmethod
@@ -349,6 +351,7 @@ _DeviceType_to_display_name = {
     DeviceType.Maestro: "Maestro",
     DeviceType.StreamDeck: "Stream Deck",
     DeviceType.Voice: "Voice",
+    DeviceType.Overlay: "Overlay",
 }
 
 _DeviceType_to_string_lookup = {
@@ -366,6 +369,7 @@ _DeviceType_to_string_lookup = {
     DeviceType.Maestro: "maestro",
     DeviceType.StreamDeck: "streamdeck",
     DeviceType.Voice: "voice",
+    DeviceType.Overlay: "overlay",
 }
 
 
@@ -384,6 +388,7 @@ _DeviceType_to_enum_lookup = {
     "maestro": DeviceType.Maestro,
     "streamdeck": DeviceType.StreamDeck,
     "voice": DeviceType.Voice,
+    "overlay": DeviceType.Overlay,
 }
 
 
@@ -398,6 +403,7 @@ class PluginVariableType(xIntEnum):
     VirtualInput = 6
     Mode = 7
     Selection = 8
+    Action = 9
 
     @staticmethod
     def to_string(value: PluginVariableType) -> str:  # noqa: F821
@@ -425,6 +431,7 @@ _PluginVariableType_to_string_lookup = {
     PluginVariableType.VirtualInput: "VirtualInput",
     PluginVariableType.Mode: "Mode",
     PluginVariableType.Selection: "Selection",
+    PluginVariableType.Action: "Action",
 }
 _PluginVariableType_to_enum_lookup = {
     "Int": PluginVariableType.Int,
@@ -435,6 +442,7 @@ _PluginVariableType_to_enum_lookup = {
     "VirtualInput": PluginVariableType.VirtualInput,
     "Mode": PluginVariableType.Mode,
     "Selection": PluginVariableType.Selection,
+    "Action": PluginVariableType.Action,
 }
 
 
@@ -1117,6 +1125,7 @@ class TabDeviceType(int, Enum):
     MaestroOutput = 13
     StreamDeck = 14
     Voice = 15
+    Overlay = 16
 
 
 class GamePadOutput(Enum):

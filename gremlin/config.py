@@ -2210,7 +2210,7 @@ class Configuration(QtCore.QObject):
             case DeviceType.ModeControl:
                 save_input_id = input_id
                 input_type = InputType.ModeControl
-            case DeviceType.Settings:
+            case DeviceType.Settings | DeviceType.Plugins | DeviceType.Overlay:
                 input_type = InputType.NotSet
                 input_id = None
                 save_input_id = None

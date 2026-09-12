@@ -207,6 +207,10 @@ class ModuleManagementController(QtCore.QObject):
             # if verbose:
             #     log.info(f"\t{str(var)}")
             if var.variable_type is not None:
+                if var.variable_type == PluginVariableType.Action:
+                    ui_element = var.create_ui_element(None)
+                    layout.addLayout(ui_element)
+                    continue
                 # Create basic profile variable instance if it does not exist
                 if not instance.has_variable(var.label):
                     profile_var = gremlin.base_profile.PluginVariable(instance)
@@ -329,6 +333,8 @@ class ModuleManagementController(QtCore.QObject):
             instance.parent.file_name
         )
         for var in variables:
+            if var.variable_type == PluginVariableType.Action:
+                continue
             ivar = instance.get_variable(var.label)
             ivar.name = var.label
             ivar.type = var.variable_type
