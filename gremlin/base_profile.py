@@ -5954,6 +5954,10 @@ class PluginInstance:
                 return True
         for var in [var for var in self.variables.values() if not var.is_optional]:
             if not var.is_configured:
+                syslog.warn(
+                    f"Plugin instance '{self.name}' not configured: variable '{var.name}' "
+                    f"type={var.type} optional={var.is_optional} value={var.value}"
+                )
                 return False
         return True
 
@@ -6043,6 +6047,11 @@ class PluginVariable:
         if self.type is None or self.name is None:
             return False
         if self.type == PluginVariableType.PhysicalInput:
+            if self.value and "device_id" in self.value:
+                return self.value["device_id"] is not None
+            return False
+
+        if self.type == PluginVariableType.VirtualInput:
             if self.value and "device_id" in self.value:
                 return self.value["device_id"] is not None
             return False
