@@ -2828,6 +2828,20 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
             self.addLeftPanelWidget(self._designer)
             self._lcd_hint_widget = None
             self._designer_mappings_enabled = True
+            # Designer needs horizontal room; don't starve it vs mapping pane.
+            try:
+                self._splitter.setChildrenCollapsible(True)
+                self._splitter.setStretchFactor(0, 3)
+                self._splitter.setStretchFactor(1, 2)
+                self._left_panel_widget.setMinimumWidth(0)
+                scroll = getattr(self, "_right_scroll_area", None)
+                if scroll is not None:
+                    scroll.setMinimumWidth(0)
+                total = max(400, self._content_widget.width() or 900)
+                left = max(280, int(total * 0.55))
+                self._splitter.setSizes([left, max(200, total - left)])
+            except Exception:
+                pass
 
         bridge.plugin_connected.connect(self._on_plugin_connected)
         bridge.inputs_changed.connect(self._on_inputs_changed)

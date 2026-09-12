@@ -1108,11 +1108,14 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         root.addWidget(self._build_toolbar())
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.setChildrenCollapsible(True)
         splitter.addWidget(self._build_pages_panel())
         splitter.addWidget(self._build_grid_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([200, 560])
+        splitter.setSizes([160, 560])
+        self._main_splitter = splitter
+        self.setMinimumWidth(0)
         root.addWidget(splitter, 1)
 
         from gremlin.ui.streamdeck_device import StreamDeckBridge
@@ -1293,7 +1296,8 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
 
     def _build_pages_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
-        panel.setMinimumWidth(160)
+        panel.setMinimumWidth(0)
+        panel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
         panel.setMaximumWidth(260)
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1352,10 +1356,10 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
             btn.setCheckable(True)
             btn.setFont(preview_font)
             btn.setCursor(QtCore.Qt.PointingHandCursor)
-            # Fixed mins so labels never elide under narrow splitters / DPI quirks.
-            btn.setMinimumWidth(100 if text == "Released" else 88)
-            btn.setMinimumHeight(30)
-            btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            # Prefer readable labels, but allow shrink in narrow designer panes.
+            btn.setMinimumWidth(72 if text == "Released" else 64)
+            btn.setMinimumHeight(28)
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
             return btn
 
         self._preview_released_btn = _preview_btn("Released")
@@ -1373,7 +1377,7 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         prs_c = _state_panel_colors("pressed")
         self._preview_released_btn.setStyleSheet(
             "QPushButton {"
-            f"  padding: 4px 14px; min-width: 100px; border: 1px solid {rel_c['border']};"
+            f"  padding: 4px 10px; min-width: 72px; border: 1px solid {rel_c['border']};"
             f"  background: {rel_c['panel_bg']};"
             "  border-top-left-radius: 4px; border-bottom-left-radius: 4px;"
             f"  font-size: 12px; color: {rel_c['btn_fg']};"
@@ -1384,7 +1388,7 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         )
         self._preview_pressed_btn.setStyleSheet(
             "QPushButton {"
-            f"  padding: 4px 14px; min-width: 88px; border: 1px solid {prs_c['border']};"
+            f"  padding: 4px 10px; min-width: 64px; border: 1px solid {prs_c['border']};"
             f"  background: {prs_c['panel_bg']};"
             "  border-top-right-radius: 4px; border-bottom-right-radius: 4px; margin-left: -1px;"
             f"  font-size: 12px; color: {prs_c['btn_fg']};"
@@ -1404,6 +1408,7 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         # between the deck and the Released/Pressed panels).
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
         bg = Color.actionBackgroundColor()
         scroll.setStyleSheet(f"QScrollArea {{ background: {bg}; border: none; }}")
@@ -1414,7 +1419,10 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         body_layout = QtWidgets.QVBoxLayout(scroll_body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(8)
-        body_layout.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        # Top-align only — horizontal centering kept oversized panels from
+        # shrinking and they spilled under the mapping pane.
+        body_layout.setAlignment(QtCore.Qt.AlignTop)
+        scroll_body.setMinimumWidth(0)
 
         self._grid_host = QtWidgets.QWidget()
         self._grid_host.setSizePolicy(
@@ -1427,8 +1435,9 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         body_layout.addWidget(self._grid_host, 0, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
 
         self._props_host = QtWidgets.QWidget()
+        self._props_host.setMinimumWidth(0)
         self._props_host.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum
         )
         props = QtWidgets.QVBoxLayout(self._props_host)
         props.setContentsMargins(4, 0, 4, 8)
@@ -1491,8 +1500,10 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
             )
             return box
 
-        states_row = QtWidgets.QHBoxLayout()
-        states_row.setSpacing(12)
+        # Stack Released / Pressed vertically so the designer can shrink with the
+        # window. Side-by-side forced a huge minimum width and blew the splitter.
+        states_row = QtWidgets.QVBoxLayout()
+        states_row.setSpacing(10)
 
         def _wire_icon_bg_row(
             layout: QtWidgets.QHBoxLayout,

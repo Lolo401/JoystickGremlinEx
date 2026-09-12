@@ -27,15 +27,13 @@ import gremlin.util
 syslog = logging.getLogger("system")
 
 _TIP_CONFIG_KEY = "streamdeck_icon_source_tip_hidden"
-_PACK_ORDER = ("navigation", "media", "system", "status", "numbers", "flight", "flight_sim")
+_PACK_ORDER = ("navigation", "media", "system", "status", "numbers")
 _PACK_TITLES = {
     "navigation": "Navigation",
     "media": "Media",
     "system": "System",
     "status": "Status",
     "numbers": "Numbers",
-    "flight": "Flight / Sim",
-    "flight_sim": "Flight Sim Panel",
 }
 _IMAGE_EXTS = (".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 _USER_META_NAME = "categories.json"
@@ -469,23 +467,21 @@ class _PackSection(QtWidgets.QWidget):
 
     def set_filter(self, query: str):
         q = (query or "").strip().casefold()
-        visible_entries = []
+        # Do not use QWidget.isVisible() for layout membership: before the dialog
+        # is shown, isVisible() is False for every child and the grid would empty.
+        matched: list[_IconTile] = []
         for tile in self._tiles:
             entry = tile.entry
             hit = (not q) or q in entry.display_name.casefold() or q in entry.name.casefold()
             tile.setVisible(hit)
             if hit:
-                visible_entries.append(entry)
-        # Reflow visible tiles
+                matched.append(tile)
         cols = self._columns()
         for tile in self._tiles:
             self._grid.removeWidget(tile)
-        idx = 0
-        for tile in self._tiles:
-            if tile.isVisible():
-                self._grid.addWidget(tile, idx // cols, idx % cols)
-                idx += 1
-        show_pack = bool(visible_entries)
+        for i, tile in enumerate(matched):
+            self._grid.addWidget(tile, i // cols, i % cols)
+        show_pack = bool(matched)
         self.setVisible(show_pack)
         if show_pack and q:
             self._expanded = True
@@ -498,12 +494,12 @@ class _PackSection(QtWidgets.QWidget):
         self._tile_size = int(tile_size)
         for tile in self._tiles:
             tile.set_tile_size(self._tile_size)
-        # reflow
+        # Reflow by filter match (isHidden), not isVisible — same pre-show pitfall.
         cols = self._columns()
-        visible = [t for t in self._tiles if t.isVisible()]
+        matched = [t for t in self._tiles if not t.isHidden()]
         for tile in self._tiles:
             self._grid.removeWidget(tile)
-        for i, tile in enumerate(visible):
+        for i, tile in enumerate(matched):
             self._grid.addWidget(tile, i // cols, i % cols)
 
     def clear_selection(self):
