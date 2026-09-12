@@ -173,6 +173,16 @@ class MacroListModel(QtCore.QAbstractListModel):
                         display = f"Set state [{action.state.key}] action: [{action.action}]"
                 else:
                     display = "Set State (no state data found)"
+            elif isinstance(action, gremlin.macro.StreamDeckAction):
+                from action_plugins.map_to_streamdeck import FUNCTIONS
+
+                label = dict(FUNCTIONS).get(action.command or "changePage", action.command or "Change Page")
+                if (action.command or "changePage") == "changePage":
+                    display = f"Stream Deck: {label} → page {int(action.page or 0) + 1}"
+                else:
+                    display = f"Stream Deck: {label}"
+                if action.auto_return:
+                    display += f" (auto-return {float(action.auto_return_seconds or 5):g}s)"
             elif isinstance(action, gremlin.macro.MacroDescriptionAction):
                 display = action.description if action.description else "(description not set)"
             else:
