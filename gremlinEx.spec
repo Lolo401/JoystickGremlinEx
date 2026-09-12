@@ -95,6 +95,7 @@ a = Analysis(
         "pyrubberband",
         "pydub",
         "faster_whisper",
+        "pycaw",
         "pycountry"] +  collect_submodules('encodings'),
     hookspath=None,
     runtime_hooks=None,

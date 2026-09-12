@@ -17,9 +17,9 @@
 
 from __future__ import annotations  # deprecated with python 3.14+
 import os
+
 # import subprocess
 from PySide6 import QtCore, QtGui, QtMultimedia, QtWidgets
-
 
 
 from lxml import etree as ElementTree
@@ -37,6 +37,7 @@ import logging
 import gremlin.sound
 from gremlin.sound import Sound, PhraseData, EdgeTTSVoice, SoundEvent
 import enum
+
 # import gremlin.ktts
 import gremlin.tts
 import gremlin.shared_state
@@ -82,13 +83,13 @@ class PlaySoundWidget(gremlin.input_item.AbstractActionWidget):
         self._updating_etts_speakers = False
 
         container_widgets = []
-        #ktts_enabled = gremlin.ktts.KTTS_ENABLED
+        # ktts_enabled = gremlin.ktts.KTTS_ENABLED
 
         self.icon_widget = QtWidgets.QLabel()
         self.file_path_widget = QtWidgets.QLineEdit()
         self.file_path_widget.installEventFilter(self)
         self.file_path_widget.textChanged.connect(self._file_changed)
-        self.edit_path_widget = gremlin.ui.ui_common.Buttons.getFolderWidget(callback = self._new_sound_file)
+        self.edit_path_widget = gremlin.ui.ui_common.Buttons.getFolderWidget(callback=self._new_sound_file)
         self.delete_path_widget = gremlin.ui.ui_common.Buttons.getDeleteWidget(callback=self._delete_sound_file)
         self.volume_widget = gremlin.ui.ui_common.QIntLineEdit(
             min_range=0,
@@ -145,19 +146,26 @@ class PlaySoundWidget(gremlin.input_item.AbstractActionWidget):
             tooltip="Suppress duplicate playback within the cooldown period.",
         )
 
-        self.tts_suppress_cooldown_widget = gremlin.ui.ui_common.QIntLineEdit(
-            min_range=0,
-            max_range=60,
-            value=self.action_data.tts_suppress_cooldown,
+        self.tts_suppress_cooldown_widget = gremlin.ui.ui_common.QDelayWidget(
+            value=self.action_data.tts_suppress_cooldown * 1000,
             callback=self._handle_tts_suppress_cooldown_changed,
-            chars=4,
+            shortcut_map={
+                "1/2s": 0.5,
+                "1s": 1,
+                "2s": 2,
+                "3s": 3,
+                "5s": 5,
+            },
+            is_seconds=True, # display as seconds
             tooltip="Cooldown time in seconds to suppress duplicate TTS playback.",
         )
 
-        self.tts_sync_cooldown_widget = gremlin.ui.ui_common.QDataPushButton("Sync", callback=self._handle_tts_sync_cooldown, tooltip="Synchronize the cooldown for duplicate TTS playback to the entire profile.")
+        self.tts_sync_cooldown_widget = gremlin.ui.ui_common.QDataPushButton(
+            "Sync", callback=self._handle_tts_sync_cooldown, tooltip="Synchronize the cooldown for duplicate TTS playback to the entire profile."
+        )
 
         cooldown_container = gremlin.ui.ui_common.getHContainer(
-            [self.tts_suppress_enabled_widget, "Cooldown (s):", self.tts_suppress_cooldown_widget, self.tts_sync_cooldown_widget], widget_only=True
+            [self.tts_suppress_enabled_widget, "(ms):", self.tts_suppress_cooldown_widget, self.tts_sync_cooldown_widget, "||"], widget_only=True
         )
 
         self.tts_file_delete_widget = gremlin.ui.ui_common.Buttons.getDeleteWidget(callback=self._handle_file_delete, tooltip="Delete the audio file")
@@ -283,7 +291,6 @@ class PlaySoundWidget(gremlin.input_item.AbstractActionWidget):
         playback_container = gremlin.ui.ui_common.getHContainer(widgets, widget_only=True)
 
         self.tts_text_container = gremlin.ui.ui_common.getVContainer(["Text:", self.tts_text_widget], widget_only=True)
-
 
         widgets = [
             "pytts Generation Options:",
@@ -513,12 +520,12 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
         container_widgets.append(self.status_container)
         container_widgets.append(info_widget)
 
-        self.body_container =gremlin.ui.ui_common.getVContainer(container_widgets, widget_only=True)
+        self.body_container = gremlin.ui.ui_common.getVContainer(container_widgets, widget_only=True)
 
         self.main_layout.addWidget(self.body_container)
 
         self._update_speakers()  # update voice lists
-        self._sync_etts_locale() # sync locale with selected speaker
+        self._sync_etts_locale()  # sync locale with selected speaker
 
         self._update_ui()
 
@@ -540,16 +547,13 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
             action.tts_cooldown = cooldown
             extra_data["count"] += 1
 
-
     def _handle_tts_sync_cooldown(self):
         # Implement the logic to synchronize the TTS cooldown across the entire profile
         result = gremlin.ui.ui_common.ConfirmBox("Synchronize cooldown settings with entire profile?")
         if result:
-            extra_data = {"enabled": self.action_data.tts_suppress_duplicate,
-                          "cooldown": self.action_data.tts_suppress_cooldown,
-                          "count" : 0}
+            extra_data = {"enabled": self.action_data.tts_suppress_duplicate, "cooldown": self.action_data.tts_suppress_cooldown, "count": 0}
             profile = gremlin.shared_state.current_profile
-            profile.filter_actions("play-sound", callback = self._handle_tag_callback, extra_data=extra_data)
+            profile.filter_actions("play-sound", callback=self._handle_tag_callback, extra_data=extra_data)
 
             count = extra_data["count"]
             if count:
@@ -709,9 +713,10 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
         # the box left _tts_suppress_duplicate unchanged and suppression stayed
         # active. Write to the actual property instead.
         self.action_data.tts_suppress_duplicate = checked
+        self._update_ui()
 
     def _handle_tts_suppress_cooldown_changed(self, value: int):
-        self.action_data._tts_suppress_cooldown = value
+        self.action_data._tts_suppress_cooldown = value / 1000 # to seconds
 
     @QtCore.Slot(bool)
     def _handle_folder_play_changed(self, checked: bool):
@@ -738,7 +743,6 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
 
     def _update_ui(self):
 
-
         device_enabled = not self.action_data.playback_default
         self.audio_container.setVisible(device_enabled)
 
@@ -750,6 +754,10 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
         self.playback_file_container.setVisible(self.action_data.mode == PlayMode.AudioFile)
 
         self.tts_save_widget.setVisible(tts_visible)
+
+        # cooldown
+        cooldown_enabled = self.action_data.tts_suppress_duplicate
+        self.tts_suppress_cooldown_widget.setEnabled(cooldown_enabled)
 
         mode = self.action_data.mode
         if mode in (PlayMode.CoquiAI, PlayMode.EdgeAI, PlayMode.PyTTS):
@@ -876,13 +884,11 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
         """refresh the list of available ETTS speakers"""
         self._update_etts_speakers()
 
-
     def _handle_refresh_pytts_speakers(self):
         """refresh the list of available pytts speakers"""
         self._update_pytts_speakers()
 
     def _handle_pytts_speaker_changed(self, value):
-
 
         if hasattr(value, "name"):
             value = value.name
@@ -891,8 +897,6 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
 
         self.action_data.pytts_speaker = value
         gremlin.config.Configuration().ai_tts_last_speaker = value
-
-
 
     # def _handle_ktts_speaker_changed(self, value):
     #     assert isinstance(value, str), f"Invalid value for KTTS speaker: {value}"
@@ -1035,9 +1039,8 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
                 if locales:
                     self._sync_etts_locale()
 
-
     def _sync_etts_locale(self):
-        """syncs the ETTS locale with the current speaker """
+        """syncs the ETTS locale with the current speaker"""
         gremlin.util.assert_ui_thread()
         config = gremlin.config.Configuration()
         speaker = self.action_data.etts_speaker
@@ -1057,7 +1060,6 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
                 if index != -1:
                     with QtCore.QSignalBlocker(self.etts_locale_widget):
                         self.etts_locale_widget.setCurrentIndex(index)
-
 
     def _get_etts_filtered_voices(self) -> dict[str, EdgeTTSVoice]:
         """gets a list of filtered voices by locale"""
@@ -1107,7 +1109,7 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
                     self.action_data.etts_locale = voice.locale
 
             if voice_changed:
-                self.etts_voice_hash = hash_value # update with last hash
+                self.etts_voice_hash = hash_value  # update with last hash
                 with QtCore.QSignalBlocker(self.etts_speaker_widget):
                     self.etts_speaker_widget.clear()
                     if voices:
@@ -1149,7 +1151,6 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
                     index = self.etts_gender_widget.findData(self.action_data.etts_gender)
                     if index != -1:
                         self.etts_gender_widget.setCurrentIndex(index)
-
 
             if self.action_data.etts_locale != self.etts_locale_widget.currentData():
                 # sync locale
@@ -1263,7 +1264,6 @@ For text to speech (tts) modes, multiple samples can be provided by separating t
     def _handle_select_default(self, widget, is_control: bool, is_shift: bool, is_alt: bool, is_right: bool):
         """selects the default playback device"""
         self._select_default_device(is_control)
-
 
     def _select_default_device(self, all: bool = False):
         default_index = self.action_data.getDefaultAudioDeviceIndex()
@@ -1437,8 +1437,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
     tag = "play-sound"
     hint = "Play a sound."
 
-
-
     # trigger condition (trigger_on_press, trigger_on_release)
     default_button_activation = (True, False)
 
@@ -1476,8 +1474,8 @@ class PlaySound(gremlin.input_item.AbstractAction):
         self.etts_speed: int = 0  # speed factor for Edge TTS as a whole percentage, e.g., 10 means +10%
         # self.ktts_speed = 1.0  # speed factor for KTTS
 
-        self._tts_suppress_duplicate = config.tts_suppress_enabled  # whether to suppress duplicate TTS playback
-        self._tts_suppress_cooldown = config.tts_suppress_cooldown  # cooldown time in seconds to suppress duplicate TTS playback
+        self._tts_suppress_duplicate: bool = config.tts_suppress_enabled  # whether to suppress duplicate TTS playback
+        self._tts_suppress_cooldown: float = config.tts_suppress_cooldown  # cooldown time in seconds to suppress duplicate TTS playback
 
         self.playback_volume: int = 100  # default volume as a percentage 0 to 100
         self.etts_pitch: int = 0  # pitch adjust in hertz (edge tts only -100 to +100)
@@ -1505,7 +1503,7 @@ class PlaySound(gremlin.input_item.AbstractAction):
 
         default_audio_device = QtMultimedia.QAudioDevice()
         self._audio_device = default_audio_device.description()
-        self._playback_default = True # true if the playback device should be the current system default
+        self._playback_default = True  # true if the playback device should be the current system default
         self._last_phrase = None  # last played phrase for multiple choice phrases
         self._last_tts_key = None  # (text, voice, rate) of the last spoken phrase, for duplicate suppression
 
@@ -1530,9 +1528,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
                 speaker = None
         assert speaker is not None, "Speaker cannot be None"
         return speaker
-
-
-
 
     def setSpeaker(self, speaker: str, mode: PlayMode):
         assert speaker is not None, "Speaker cannot be None"
@@ -1566,6 +1561,7 @@ class PlaySound(gremlin.input_item.AbstractAction):
     @property
     def sound_file(self) -> str:
         return self._sound_file
+
     @sound_file.setter
     def sound_file(self, value: str):
         self._sound_file = value
@@ -1583,7 +1579,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
     @tts_suppress_duplicate.setter
     def tts_suppress_duplicate(self, value: bool):
         self._tts_suppress_duplicate = value
-
 
     @property
     def tts_suppress_cooldown(self) -> int:
@@ -1709,8 +1704,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
             suggested_file = gremlin.util.swap_ext(suggested_file, ext)
             return suggested_file
 
-
-
     def generate(self, force=False, as_map: bool = False):
         match self.mode:
             case PlayMode.AudioFile:
@@ -1779,7 +1772,7 @@ class PlaySound(gremlin.input_item.AbstractAction):
                     profile = gremlin.shared_state.current_profile
                     profile.save()
 
-    def play(self, blocking = False):
+    def play(self, blocking=False):
         """plays the sound"""
 
         sound_file = None
@@ -1819,7 +1812,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
             sound_file=self._sound_file,
             sound_files=self._sound_files,
             timed_random=self._timed_random,
-
         )
 
         sound_file = phrase.sound_file if phrase else None
@@ -1886,7 +1878,7 @@ class PlaySound(gremlin.input_item.AbstractAction):
                 fadeout_ms=self.fadeout_ms,
                 stop_previous=self.stop_previous,
                 rate=self.playback_rate,
-                blocking=blocking
+                blocking=blocking,
             )
             actions.append(action)
 
@@ -1901,12 +1893,11 @@ class PlaySound(gremlin.input_item.AbstractAction):
                 syslog.error(f"PLAY: don't know how to play: {sound_file}")
 
     def stopPlayback(self):
-        """ stops all playbacks """
+        """stops all playbacks"""
         verbose = gremlin.config.Configuration().verbose_mode_sound
         if verbose:
             syslog.info("Stopping playback")
         self.sound.stopPlayback()
-
 
     def findDevice(self, index: int):
         if index == DEFAULT_AUDIO_DEVICE_INDEX:
@@ -1940,12 +1931,11 @@ class PlaySound(gremlin.input_item.AbstractAction):
             device = default_audio_device
         return device
 
-
     def getDefaultAudioDevice(self):
         return self.sound.getDefaultAudioDevice()
 
     def getDefaultAudioDeviceName(self):
-        """ gets the current operating system default device name """
+        """gets the current operating system default device name"""
         device_name = self.sound.getDefaultAudioDeviceName()
         verbose = gremlin.config.Configuration().verbose_mode_sound
         if verbose:
@@ -1982,7 +1972,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
         self.mode = PlayMode.from_string(mode)
         self.blocking = safe_read(node, "blocking", bool, False)
 
-
         self._pytts_speaker = gremlin.sound.DEFAULT_PYTTS_SPEAKER  # speaker for PyTTS
         self._etts_speaker = gremlin.sound.DEFAULT_ETTS_SPEAKER  # speaker for Edge TTS
 
@@ -1995,7 +1984,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
             self.mode = PlayMode.EdgeAI
             # convert speaker to default
             speaker = gremlin.sound.DEFAULT_ETTS_SPEAKER
-
 
         match self.mode:
             case PlayMode.EdgeAI:
@@ -2024,6 +2012,9 @@ class PlaySound(gremlin.input_item.AbstractAction):
         self.text = None
         if "text" in node.attrib:
             self.text = html.unescape(node.get("text"))
+
+        self._tts_suppress_duplicate = safe_read(node, "tts-sup-dup", bool, False)
+        self._tts_suppress_cooldown = safe_read(node, "tts-cool-dup", float, 5.0)
 
         if self.mode == PlayMode.EdgeAI:
             if speaker:
@@ -2081,7 +2072,7 @@ class PlaySound(gremlin.input_item.AbstractAction):
             generate_on_load = gremlin.config.Configuration().tts_generate_on_load
             if generate_on_load:
                 syslog.info(f"PLAY: autogenerating [{self.text}]...")
-                phrase_map = self.generate(as_map = True)
+                phrase_map = self.generate(as_map=True)
                 syslog.info(f"PLAY: autogenerated {len(phrase_map)} phrase(s)...")
 
     def _generate_xml(self):
@@ -2098,7 +2089,6 @@ class PlaySound(gremlin.input_item.AbstractAction):
 
         if self.tts_file:
             node.set("tts_file", self.tts_file)
-
 
         assert self.speaker is not None, "Speaker cannot be None"
 
@@ -2128,6 +2118,8 @@ class PlaySound(gremlin.input_item.AbstractAction):
         node.set("playback-default", safe_format(self._playback_default, bool))
         node.set("playback-mode", safe_format(self.playback_mode.name, str))
         node.set("auto-generate", safe_format(self.auto_generate, bool))
+        node.set("tts-sup-dup", safe_format(self._tts_suppress_duplicate, bool))
+        node.set("tts-cool-dup", safe_format(self._tts_suppress_cooldown, float))
         return node
 
     def _is_valid(self):

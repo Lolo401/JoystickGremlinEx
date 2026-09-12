@@ -9057,10 +9057,27 @@ class QDelayWidget(QWidget):
         label=None,
         tooltip=None,
         show_zero=False,
+        shortcut_map : {str,float}= None,
     ):
         """
+        Delay widget for specifying a time interval in milliseconds or seconds.
 
-        :params value: default delay in milliseconds"""
+        :params value: default delay in milliseconds or seconds depending on is_seconds flag
+        :params min_value_seconds: minimum allowed delay in seconds
+        :params max_value_seconds: maximum allowed delay in seconds
+        :params is_seconds: if True, the value is interpreted as seconds, otherwise as milliseconds
+        :params callback: function to call when the value changes
+        :params invalid_callback: function to call when the input is invalid
+        :params validation_callback: function to call to validate the input
+        :params show_shortcuts: whether to show shortcut buttons for common delay values
+        :params parent: parent widget
+        :params label: label for the delay input
+        :params tooltip: tooltip for the delay input
+        :params show_zero: whether to show the "0s" shortcut
+        :params shortcut_map: custom shortcut map for delay values dict of label, values (float)
+
+
+        """
         super().__init__(parent)
         self._value = value
         self._supressed = False
@@ -9095,16 +9112,19 @@ class QDelayWidget(QWidget):
         if show_shortcuts:
             widgets = []
 
-            shortcuts = {
-                "0s": 0,
-                "1/10s": 100,
-                "1/4s": 250,
-                "1/2s": 500,
-                "3/4s": 750,
-                "1s": 1000,
-            }
-            if not show_zero:
-                del shortcuts["0s"]
+            if shortcut_map is not None:
+                shortcuts = shortcut_map
+            else:
+                shortcuts = {
+                    "0s": 0,
+                    "1/10s": 100,
+                    "1/4s": 250,
+                    "1/2s": 500,
+                    "3/4s": 750,
+                    "1s": 1000,
+                }
+                if not show_zero:
+                    del shortcuts["0s"]
 
             for label, value in shortcuts.items():
                 widgets.append(QDataPushButton(label, data=value, callback=self._handle_shortcut))
@@ -9152,7 +9172,7 @@ class QDelayWidget(QWidget):
         """sets the widget value
         :param value: value in ms or in seconds if the widget mode is set to seconds
         """
-        milliseconds = milliseconds = value * 1000 if self._is_seconds else value
+        milliseconds = value * 1000 if self._is_seconds else value
         if self._validation_callback:
             if not self._validation_callback(milliseconds):
                 return

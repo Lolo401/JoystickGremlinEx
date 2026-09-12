@@ -38,7 +38,8 @@ import gremlin.singleton_decorator
 
 syslog = logging.getLogger("system")
 
-VOICE_INPUT_ENABLED = False
+# VOICE_INPUT_ENABLED = True
+VOICE_INPUT_ENABLED = False # turn off for production while voice input is being tested
 
 @gremlin.singleton_decorator.SingletonDecorator
 class Configuration(QtCore.QObject):
@@ -664,11 +665,13 @@ class Configuration(QtCore.QObject):
         self._set_data("tts_suppress_enabled", value)
 
     @property
-    def tts_suppress_cooldown(self) -> int:
-        return self._get_data("tts_suppress_cooldown", 5)
+    def tts_suppress_cooldown(self) -> float:
+        # cooldown milliseconds to suppress duplicate TTS playback
+        return self._get_data("tts_suppress_cooldown", 5.0)
 
     @tts_suppress_cooldown.setter
-    def tts_suppress_cooldown(self, value: int):
+    def tts_suppress_cooldown(self, value: float):
+        # cooldown milliseconds
         self._set_data("tts_suppress_cooldown", value)
 
     @property

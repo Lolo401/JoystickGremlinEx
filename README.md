@@ -48,6 +48,12 @@ The test versions are available here: https://github.com/muchimi/JoystickGremlin
 
 # Change log
 
+### (m77T50)
+- Fix: Macro API: for the older macro run model, revisited start/stop logic of the macro scheduler and removed daemon status which would cause shutdown/restart logic errors.  This does not impact the new faster macro run model.
+- Fix: PlaySound Action: persist suppress duplication options
+- Experimental: voice input device [not enabled in production].  This device does speech recognition to trigger based on voice commands and will show up as a new special device type.  It's not in production right now as this is in the very early stages of testing/implementation but is completely functional at the API level.  More on this later.
+
+
 
 ### (m77T49)
 - Fix: Map to State Action: exception when in pulse mode on profile mode change.

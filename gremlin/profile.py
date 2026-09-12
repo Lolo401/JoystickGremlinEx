@@ -217,6 +217,7 @@ class ProfileConverter:
         # Load the profile
         tree = etree.parse(fname)
         root = tree.getroot()
+        verbose = False
 
         # Check if a conversion is required
         if self.is_current(fname):
@@ -268,14 +269,13 @@ class ProfileConverter:
             if new_root is not None:
                 # Save converted version
                 tree = etree.ElementTree(new_root)
-                nodes = new_root.xpath("//devices/device")
-                for node in nodes:
-                    syslog.info(f"Converted device: {etree.tostring(node)}")
+                if verbose:
+                    nodes = new_root.xpath("//devices/device")
+                    for node in nodes:
+                        syslog.info(f"Converted device: {etree.tostring(node)}")
                 tree.write(fname, pretty_print=True, xml_declaration=True, encoding="utf-8")
             else:
                 raise error.ProfileError("Failed to convert profile")
-
-
 
     def _determine_version(self, root):
         """Returns the version of the provided profile.

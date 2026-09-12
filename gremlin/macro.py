@@ -319,6 +319,7 @@ class MacroManager(QtCore.QObject):
         self._flags_lock = Lock()
         self._queue_lock = Lock()
         self._tasks_lock = RLock()
+        self._abort_event = threading.Event() # scheduler abort event
         self.pool = concurrent.futures.ThreadPoolExecutor()  # supports mutliple concurrent macro threads
         self._macro_flags = {} # map of active macro abort flags by [macro id]->threading.Event
         self._macro_map = {} # map of macro ID to macro
@@ -334,7 +335,7 @@ class MacroManager(QtCore.QObject):
 
         self._is_executing_exclusive = False
         self._is_running = False
-        self._schedule_event = Event()  # used to step through macro executions
+        self._schedule_event = threading.Event()  # used to step through macro executions
 
         self._run_scheduler_thread = None
         self.el.profile_stop.connect(self._profile_stop)
@@ -404,18 +405,15 @@ class MacroManager(QtCore.QObject):
 
         self._is_running = True
         self._clear_queue()
-        # A threading.Thread can only be started once, and a thread object left
-        # over from a previous run (possibly not alive, or torn down by a race
-        # during stop) must not be reused. Discard any non-live thread and its
-        # potentially inconsistent internal state, then create a fresh one.
         thread = self._run_scheduler_thread
         if thread is None or not thread.is_alive():
             # reset the wake-up event so the fresh thread starts from a clean
             # state (avoids waiting on a half-torn-down primitive)
+            self._abort_event.clear()
             self._schedule_event = Event()
-            self._run_scheduler_thread = Thread(target=self._run_scheduler)
+            self._run_scheduler_thread = Thread(target=self._run_scheduler, args=(self._abort_event,))
             self._run_scheduler_thread.name = "Macro scheduler"
-            self._run_scheduler_thread.daemon = True
+            # self._run_scheduler_thread.daemon = True
             self._run_scheduler_thread.start()
             if self.verbose:
                 syslog.info("Macro scheduler thread started")
@@ -430,11 +428,12 @@ class MacroManager(QtCore.QObject):
             eh.unregisterModeChangeHook(self.id)
             self._hook_mode_change = False
 
-        if self._run_scheduler_thread is not None:
+        if self._run_scheduler_thread is not None and self._run_scheduler_thread.is_alive():
             # Terminate the scheduler. Wake it so it can observe _is_running
             # being False and exit its wait loop, then join if it is still alive.
+            self._abort_event.set()
             self._schedule_event.set()
-            if self._run_scheduler_thread.is_alive():
+            if not self._run_scheduler_thread.daemon:
                 self._run_scheduler_thread.join()
             # Always drop the reference, even if the thread had already exited,
             # so start() never sees a stale/terminated thread object.
@@ -598,10 +597,10 @@ class MacroManager(QtCore.QObject):
 
 
 
-    def _run_scheduler(self):
+    def _run_scheduler(self, abort_event : threading.Event):
         """Dispatches macros as required."""
 
-        while self._is_running:
+        while self._is_running and not abort_event.is_set():
             # Wake up when the event triggers and reset it
             # while not self._queue or not self._schedule_event.is_set():
             #     time.sleep(0.01)
