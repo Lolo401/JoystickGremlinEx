@@ -8402,6 +8402,8 @@ Supports axis merging, curved output, command, hat and button mappings.
         if input_id >= 0:
             assert VjoyAction.is_button_action(self.action_mode), "should not be called if this mode"
             state = gremlin.joystick_handling.VirtualDeviceUsageState()
+            # Ensure registration before usage updates (paste / id regen races).
+            state.registerAction(self.id)
             state.set_usage_state(device_guid=self.virtual_device_guid, button_id=input_id, used=used, key=self.id)
 
     def _generate_xml(self):

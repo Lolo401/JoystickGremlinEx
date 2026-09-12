@@ -1265,6 +1265,14 @@ def registerSpecialDevices():
     device.device_category = DeviceCategory.Config
     registerConfigDevice(device)
 
+    # overlay designer
+    device = DeviceSummary()
+    device.name = "Overlay"
+    device.device_guid = gremlin.shared_state.overlay_tab_guid
+    device.device_type = DeviceType.Overlay
+    device.device_category = DeviceCategory.Config
+    registerConfigDevice(device)
+
 
 def getSpecialDevices() -> list:
     """gets all special devices"""
@@ -2219,7 +2227,10 @@ class VirtualDeviceUsageState:
     def _set_usage_state(self, device_type: DeviceType, virtual_id: int, button_id: int, key, used: bool, emit=True):
         """sets the usage state for a virtual button"""
 
-        assert key in self._action_map, "action not registered"
+        # Paste / GUID regen can briefly leave an action unregistered; auto-heal
+        # instead of asserting so the mapping UI can finish building.
+        if key not in self._action_map:
+            self.registerAction(key)
 
         current_state = self._get_usage_state(device_type, virtual_id, button_id)
 
