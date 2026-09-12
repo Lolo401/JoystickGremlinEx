@@ -1543,15 +1543,23 @@ class StreamDeckBridge(QtCore.QObject):
         """Switch Companion-style GEX bank and paint live keys (no Elgato page limit)."""
         device_id = device_id or ""
         page = normalize_page(page)
-        if device_id:
-            previous = normalize_page(self._active_page.get(device_id, 1))
-            if previous != page:
-                self._last_page[device_id] = previous
-                # Drop press-hold visuals — they belong to the old bank and would
-                # ghost over the new page until keyUp (Change Page under the finger).
-                self._clear_held_for_device(device_id)
-            self._ensure_page_listed(device_id, page)
-            self._active_page[device_id] = page
+        if not device_id:
+            syslog.warning("STREAMDECK: set_virtual_page — empty device_id")
+            return False
+        if self.devices and device_id not in self.devices:
+            syslog.warning(
+                f"STREAMDECK: set_virtual_page — unknown device "
+                f"[{device_id[:12]}…] (not in connected decks)"
+            )
+            return False
+        previous = normalize_page(self._active_page.get(device_id, 1))
+        if previous != page:
+            self._last_page[device_id] = previous
+            # Drop press-hold visuals — they belong to the old bank and would
+            # ghost over the new page until keyUp (Change Page under the finger).
+            self._clear_held_for_device(device_id)
+        self._ensure_page_listed(device_id, page)
+        self._active_page[device_id] = page
         self.paint_active_page(device_id)
         self.virtual_page_changed.emit(device_id, page)
         return True

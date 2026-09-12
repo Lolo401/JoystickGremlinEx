@@ -2612,6 +2612,21 @@ class EventHandler(QtCore.QObject):
                         if verbose:
                             syslog.info(f"Match Input: input item : magic: {magic} (mode: {lookup_mode})")
                         return mode_map[input_type][magic]
+                    # State events: fall back to message_key match (object identity
+                    # can miss after profile reload / clone).
+                    if input_type == InputType.State:
+                        want = getattr(magic, "message_key", None) or getattr(magic, "key", None)
+                        if want:
+                            for mapped_magic, mapped_item in mode_map[input_type].items():
+                                mapped_key = getattr(mapped_magic, "message_key", None) or getattr(
+                                    mapped_item, "message_key", None
+                                ) or getattr(mapped_item, "key", None)
+                                if mapped_key == want:
+                                    if verbose:
+                                        syslog.info(
+                                            f"Match Input: state by key [{want}] (mode: {lookup_mode})"
+                                        )
+                                    return mapped_item
                     elif verbose:
                         syslog.info("available magic values for this input are: ")
                         for m in mode_map[input_type]:
@@ -3437,6 +3452,21 @@ class EventHandler(QtCore.QObject):
                         if not skip_execute:
                             self._execute_callbacks(event, [], f_list)
                         return [], f_list
+                # States are registered in state_callbacks (by message_key), not only
+                # input_item_map. Do not drop the event when the map lookup misses —
+                # that silently blocked Map to Stream Deck / other state mappings.
+                if event.event_type == InputType.State:
+                    m_list = self._matching_state_callbacks(event)
+                    if m_list:
+                        if verbose:
+                            syslog.info(
+                                f"EVENT: [STATE] input_item_map miss; running "
+                                f"{len(m_list)} state callback(s) for "
+                                f"{getattr(event.identifier, 'message_key', event.identifier)}"
+                            )
+                        if not skip_execute:
+                            self._execute_callbacks(event, m_list, [])
+                        return m_list, []
                 if verbose:
                     syslog.info(f"Event: input not registered {str(event)}")
                 return None, None
@@ -3789,16 +3819,27 @@ class EventHandler(QtCore.QObject):
         import gremlin.execution_graph
 
         callback_list = []
-        if event.event_type == InputType.State:
+                if event.event_type == InputType.State:
             key = event.identifier.message_key
             if event.device_guid in self.state_callbacks:
+                device_cbs = self.state_callbacks[event.device_guid]
                 ec = gremlin.execution_graph.ExecutionContext()  # current execution context
                 # search callbacks for mode hierarchy
-                callback_list = ec.getCallbacks(self.state_callbacks[event.device_guid], key, self.runtime_mode)
+                callback_list = ec.getCallbacks(device_cbs, key, self.runtime_mode)
+                # Fallback: states are registered for every profile mode; if the
+                # mode tree walk misses (master/runtime mismatch), scan directly.
+                if not callback_list:
+                    for mode_map in device_cbs.values():
+                        if key in mode_map and mode_map[key]:
+                            callback_list = mode_map[key]
+                            break
 
-            # verbose = gremlin.config.Configuration().verbose_mode_state
-            # if verbose and not callback_list:
-            # 	syslog.info(f"STATE: state: [{key}] mode: [{self.runtime_mode}] has no callbacks. This is normal if state has no mappings.")
+            verbose = gremlin.config.Configuration().verbose_mode_state
+            if verbose and not callback_list:
+                syslog.info(
+                    f"STATE: state: [{key}] mode: [{self.runtime_mode}] has no "
+                    "callbacks. This is normal if state has no mappings."
+                )
 
         # Filter events when the system is paused
         if not self.process_callbacks:

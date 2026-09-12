@@ -294,6 +294,11 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
             press_callback=self._press_changed,
             release_callback=self._release_changed,
         )
+        # QExecuteWidget labels the second box "Release on press" but it means
+        # execute on release — keep at least one path enabled.
+        if not self.action_data.execute_on_press and not self.action_data.execute_on_release:
+            self.action_data.execute_on_press = True
+            self._execute_widget.execute_on_press = True
         self.main_layout.addWidget(self._execute_widget)
 
         try:
@@ -564,14 +569,38 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
 
         cmd = self.action_data.command or "changePage"
         device_id = self.action_data.device_id or ""
-        # Prefer the device that actually sent this Stream Deck event.
-        ident = event.identifier
-        if hasattr(ident, "device_id") and ident.device_id:
-            device_id = ident.device_id
+        # Only Stream Deck events carry an Elgato deviceId on the identifier.
+        # State/Joystick InputItem.device_id is the GEX device string (e.g. state
+        # tab GUID 72bbc0f4…) — using that here sent Change Page to a non-deck.
+        if event.event_type == InputType.StreamDeck:
+            ident = event.identifier
+            elgato_id = getattr(ident, "device_id", None) or getattr(
+                ident, "_elgato_device_id", None
+            )
+            if elgato_id and elgato_id in bridge.devices:
+                device_id = elgato_id
+
+        devices = bridge.devices
+        if device_id and device_id not in devices:
+            syslog.warning(
+                f"Map to Stream Deck: device [{device_id[:12]}] is not a connected "
+                f"Stream Deck (src={event.event_type.name}) — check Device selection."
+            )
+            device_id = ""
         if not device_id:
-            devices = bridge.devices
             if len(devices) == 1:
                 device_id = next(iter(devices.keys()))
+            elif len(devices) > 1:
+                syslog.warning(
+                    "Map to Stream Deck: no device selected and multiple decks "
+                    "are connected — pick a Device in the action."
+                )
+                return True
+            else:
+                syslog.warning(
+                    "Map to Stream Deck: no Stream Deck connected (plugin bridge)."
+                )
+                return True
 
         if cmd in PAGE_COMMANDS:
             page = self.action_data.page
@@ -580,14 +609,16 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
             label = dict(FUNCTIONS).get(cmd, cmd)
             syslog.info(
                 f"Map to Stream Deck: {label} "
-                f"device={device_id[:12] if device_id else '?'}"
+                f"device={device_id[:12] if device_id else '?'} "
+                f"page0={int(page)} pressed={is_pressed} "
+                f"src={event.event_type.name}"
                 + (
                     f" (auto-return {float(self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS):g}s)"
                     if self.action_data.auto_return
                     else ""
                 )
             )
-            apply_page_command(
+            ok = apply_page_command(
                 device_id,
                 cmd,
                 int(page),
@@ -596,6 +627,11 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
                     self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS
                 ),
             )
+            if not ok:
+                syslog.warning(
+                    f"Map to Stream Deck: {label} failed for device="
+                    f"{device_id[:12] if device_id else '?'}"
+                )
         else:
             syslog.warning(f"Map to Stream Deck: unsupported function [{cmd}]")
 
@@ -646,7 +682,9 @@ class MapToStreamDeck(gremlin.input_item.AbstractAction):
         return False
 
     def _is_valid(self):
-        return gremlin.config.Configuration().streamdeck_enabled
+        # Keep mappings runnable once configured even if the Options toggle
+        # flaps; bridge start is handled at profile start / functor time.
+        return bool(self.command)
 
     def _parse_xml(self, node, data=None, extra_data=None):
         command = safe_read(node, "command", str, "changePage")
