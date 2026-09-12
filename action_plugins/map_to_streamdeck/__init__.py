@@ -1,7 +1,7 @@
 # -*- coding: utf-8; -*-
 #
 # Map to Stream Deck — control a connected Stream Deck via the plugin bridge.
-# First function: Change Page (Elgato switchToProfile + plugin-bundled profile pages).
+# Change / Next / Previous / Return to Last switch unlimited GEX virtual banks and paint keys.
 #
 # Based in part on original Joystick Gremlin work by Lionel Ott and other contributors - Gremlin Ex is (C) EMCS 2026
 #
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from lxml import etree as ElementTree
 
 from PySide6 import QtCore, QtWidgets
@@ -29,7 +30,14 @@ syslog = logging.getLogger("system")
 
 FUNCTIONS = [
     ("changePage", "Change Page"),
+    ("nextPage", "Next Page"),
+    ("previousPage", "Previous Page"),
+    ("returnToLast", "Return to Last"),
 ]
+
+PAGE_COMMANDS = frozenset(cmd for cmd, _ in FUNCTIONS)
+# Functions that jump to a specific/adjacent page (support timed auto-return).
+AUTO_RETURN_COMMANDS = frozenset({"changePage", "nextPage", "previousPage"})
 
 # Elgato DeviceType -> single plugin profile (pages are pages, not extra profiles).
 PROFILE_BY_DEVICE_TYPE = {
@@ -40,6 +48,10 @@ PROFILE_BY_DEVICE_TYPE = {
     9: "profiles/jgex-neo",  # Neo
 }
 DEFAULT_PROFILE = "profiles/jgex-xl"
+
+# Pending auto-return timers keyed by device_id (one pending return per deck).
+_auto_return_timers: dict[str, threading.Timer] = {}
+DEFAULT_AUTO_RETURN_SECONDS = 5.0
 
 
 def resolve_profile_for_device(device_id: str, page: int = 0) -> str:
@@ -59,8 +71,144 @@ def resolve_profile_for_device(device_id: str, page: int = 0) -> str:
     return DEFAULT_PROFILE
 
 
+def adjacent_page_1based(device_id: str, delta: int) -> int:
+    """Next/previous GEX page (1-based), wrapping within ``list_pages``."""
+    from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+    bridge = StreamDeckBridge()
+    device_id = device_id or ""
+    pages = list(bridge.list_pages(device_id) or [1])
+    if not pages:
+        pages = [1]
+    current = bridge.get_active_page(device_id) if device_id else pages[0]
+    if current not in pages:
+        pages = sorted(set(pages) | {current})
+    idx = pages.index(current)
+    return pages[(idx + int(delta)) % len(pages)]
+
+
+def cancel_auto_return(device_id: str = "") -> None:
+    """Cancel any pending auto-return for a deck (or all if device_id empty)."""
+    if device_id:
+        timer = _auto_return_timers.pop(device_id, None)
+        if timer is not None:
+            timer.cancel()
+        return
+    for key in list(_auto_return_timers.keys()):
+        timer = _auto_return_timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+
+
+def schedule_auto_return(device_id: str, page_0based: int, seconds: float) -> None:
+    """After ``seconds``, switch the deck back to ``page_0based`` (action page index)."""
+    device_id = device_id or ""
+    cancel_auto_return(device_id)
+    try:
+        delay = float(seconds)
+    except (TypeError, ValueError):
+        delay = 0.0
+    if delay <= 0:
+        return
+
+    def _fire():
+        _auto_return_timers.pop(device_id, None)
+        try:
+            from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+            bridge = StreamDeckBridge()
+            syslog.info(
+                f"Map to Stream Deck: Auto-return -> GEX bank {int(page_0based)+1} "
+                f"device={device_id[:12] if device_id else '?'}"
+            )
+            bridge.change_page(device_id, int(page_0based), "")
+        except Exception as exc:
+            syslog.warning(f"Map to Stream Deck: auto-return failed: {exc}")
+
+    timer = threading.Timer(delay, _fire)
+    timer.daemon = True
+    _auto_return_timers[device_id] = timer
+    timer.start()
+
+
+def apply_change_page(
+    device_id: str,
+    page_0based: int,
+    *,
+    auto_return: bool = False,
+    auto_return_seconds: float = DEFAULT_AUTO_RETURN_SECONDS,
+    profile: str = "",
+) -> bool:
+    """Switch GEX virtual page; optionally schedule return to the prior page."""
+    from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+    bridge = StreamDeckBridge()
+    if not bridge.started:
+        bridge.start()
+
+    device_id = device_id or ""
+    # Any new Change Page cancels a pending return for this deck.
+    cancel_auto_return(device_id)
+
+    previous_1based = bridge.get_active_page(device_id) if device_id else 1
+    try:
+        target_0based = max(0, int(page_0based))
+    except (TypeError, ValueError):
+        target_0based = 0
+    target_1based = target_0based + 1
+
+    ok = bool(bridge.change_page(device_id, target_0based, profile or ""))
+    if not ok:
+        return False
+
+    if auto_return and previous_1based != target_1based:
+        schedule_auto_return(device_id, max(0, previous_1based - 1), auto_return_seconds)
+    return True
+
+
+def apply_return_to_last(device_id: str) -> bool:
+    """Switch to the page that was active before the current one."""
+    from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+    bridge = StreamDeckBridge()
+    if not bridge.started:
+        bridge.start()
+    device_id = device_id or ""
+    cancel_auto_return(device_id)
+    return bool(bridge.return_to_last_page(device_id))
+
+
+def apply_page_command(
+    device_id: str,
+    command: str,
+    page_0based: int = 0,
+    *,
+    auto_return: bool = False,
+    auto_return_seconds: float = DEFAULT_AUTO_RETURN_SECONDS,
+    profile: str = "",
+) -> bool:
+    """Run Change / Next / Previous / Return to Last with optional auto-return."""
+    cmd = command or "changePage"
+    if cmd == "returnToLast":
+        return apply_return_to_last(device_id)
+    if cmd == "nextPage":
+        page_0based = adjacent_page_1based(device_id, +1) - 1
+    elif cmd == "previousPage":
+        page_0based = adjacent_page_1based(device_id, -1) - 1
+    elif cmd != "changePage":
+        syslog.warning(f"Map to Stream Deck: unsupported function [{cmd}]")
+        return False
+    return apply_change_page(
+        device_id,
+        page_0based,
+        auto_return=auto_return,
+        auto_return_seconds=auto_return_seconds,
+        profile=profile,
+    )
+
+
 class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
-    """UI: pick a connected Stream Deck, then a function (Change Page first)."""
+    """UI: pick a connected Stream Deck, then a page function."""
 
     def __init__(self, action_data, parent=None):
         super().__init__(action_data, parent=parent)
@@ -82,7 +230,7 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
         self.refresh_btn.clicked.connect(self._refresh_devices)
 
         self.test_btn = QtWidgets.QPushButton("Test")
-        self.test_btn.setToolTip("Send Change Page now (profile does not need to be running)")
+        self.test_btn.setToolTip("Run this page function now (profile does not need to be running)")
         self.test_btn.clicked.connect(self._test_clicked)
 
         device_row = gremlin.ui.ui_common.getHContainer(
@@ -104,18 +252,41 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
             gremlin.ui.ui_common.getHContainer(self.function_widget, "Function:", widget_only=True)
         )
 
-        self.page_widget = gremlin.ui.ui_common.QIntLineEdit()
-        self.page_widget.setRange(1, 99)
-        stored = self.action_data.page
-        self.page_widget.setValue(1 if stored is None else int(stored) + 1)
+        self.page_widget = gremlin.ui.ui_common.QDataComboBox()
+        self.page_widget.setMinimumWidth(220)
         self.page_widget.setToolTip(
-            "Page number (1 = first JG Ex profile page). "
-            "Close the Stream Deck configuration window before testing — "
-            "Elgato ignores profile switches while the editor is open."
+            "GEX virtual page (Companion-style bank). Unlimited — not limited by Elgato's ~10 profile pages. "
+            "Populate one Elgato page with JG Ex Buttons as the hardware viewport."
         )
-        self.page_widget.valueChanged.connect(self._page_changed)
+        self.page_widget.currentIndexChanged.connect(self._page_changed)
         self.page_row = gremlin.ui.ui_common.getHContainer(self.page_widget, "Page:", widget_only=True)
         self.main_layout.addWidget(self.page_row)
+
+        self.auto_return_widget = QtWidgets.QCheckBox("Auto-return to previous page")
+        self.auto_return_widget.setToolTip(
+            "After switching, automatically return to the page that was active before this action."
+        )
+        self.auto_return_widget.setChecked(bool(self.action_data.auto_return))
+        self.auto_return_widget.toggled.connect(self._auto_return_toggled)
+
+        self.auto_return_seconds_widget = QtWidgets.QDoubleSpinBox()
+        self.auto_return_seconds_widget.setRange(0.1, 3600.0)
+        self.auto_return_seconds_widget.setDecimals(1)
+        self.auto_return_seconds_widget.setSingleStep(0.5)
+        self.auto_return_seconds_widget.setSuffix(" s")
+        self.auto_return_seconds_widget.setToolTip("Seconds to stay on the target page before returning")
+        try:
+            seconds = float(self.action_data.auto_return_seconds)
+        except (TypeError, ValueError):
+            seconds = DEFAULT_AUTO_RETURN_SECONDS
+        self.auto_return_seconds_widget.setValue(max(0.1, seconds))
+        self.auto_return_seconds_widget.valueChanged.connect(self._auto_return_seconds_changed)
+
+        self.auto_return_row = gremlin.ui.ui_common.getHContainer(
+            [self.auto_return_widget, self.auto_return_seconds_widget],
+            widget_only=True,
+        )
+        self.main_layout.addWidget(self.auto_return_row)
 
         self._execute_widget = gremlin.ui.ui_common.QExecuteWidget(
             self.action_data.execute_on_press,
@@ -125,25 +296,18 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
         )
         self.main_layout.addWidget(self._execute_widget)
 
-        note = QtWidgets.QLabel(
-            "Use the single <b>JG Ex XL</b> profile (pages stay pages inside that profile). "
-            "Change Page updates key titles live over the plugin bridge and asks Elgato "
-            "to switch to that page index. It does not create one profile per page, "
-            "and does not restart or close Stream Deck."
-        )
-        note.setWordWrap(True)
-        self.main_layout.addWidget(note)
-
         try:
             from gremlin.ui.streamdeck_device import StreamDeckBridge
 
             bridge = StreamDeckBridge()
             bridge.devices_changed.connect(self._refresh_devices)
             bridge.plugin_connected.connect(lambda _c: self._refresh_devices())
+            bridge.virtual_page_changed.connect(self._on_virtual_page_changed)
         except Exception:
             pass
 
         self._refresh_devices()
+        self._refresh_pages()
         self._update_visibility()
 
     def _populate_ui(self):
@@ -165,6 +329,30 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
         except Exception:
             return []
 
+    def _page_choices(self, device_id: str) -> list[tuple[int, str]]:
+        """Return [(1-based page, label), ...] for the selected deck only."""
+        try:
+            from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+            bridge = StreamDeckBridge()
+            did = device_id or ""
+            if not did and bridge.devices:
+                did = next(iter(bridge.devices.keys()))
+            pages = bridge.list_pages(did) if did else [1]
+            if not pages:
+                pages = [1]
+            out = []
+            for page in pages:
+                name = bridge.page_name(did, page) if did else f"Page {page}"
+                if name == f"Page {page}":
+                    label = f"{page}. Page {page}"
+                else:
+                    label = f"{page}. {name}"
+                out.append((page, label))
+            return out
+        except Exception:
+            return [(1, "1. Page 1")]
+
     @QtCore.Slot()
     def _refresh_devices(self):
         if not Shiboken.isValid(self) or not Shiboken.isValid(self.device_widget):
@@ -184,12 +372,53 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
             self.device_widget.setCurrentIndex(idx)
             self.action_data.device_id = self.device_widget.currentData() or ""
         self.device_widget.blockSignals(False)
+        self._refresh_pages()
+
+    def _refresh_pages(self):
+        if not Shiboken.isValid(self) or not Shiboken.isValid(self.page_widget):
+            return
+        device_id = self.action_data.device_id or (self.device_widget.currentData() if Shiboken.isValid(self.device_widget) else "") or ""
+        stored = self.action_data.page
+        want = 1 if stored is None else int(stored) + 1
+
+        choices = self._page_choices(device_id)
+        page_nums = {p for p, _ in choices}
+        if want not in page_nums:
+            choices.append((want, f"{want}. Page {want}"))
+            choices.sort(key=lambda x: x[0])
+
+        self.page_widget.blockSignals(True)
+        self.page_widget.clear()
+        select_idx = 0
+        for i, (page, label) in enumerate(choices):
+            self.page_widget.addItem(label, page)
+            if page == want:
+                select_idx = i
+        self.page_widget.setCurrentIndex(select_idx)
+        self.page_widget.blockSignals(False)
+        # Keep action_data in sync with the combo selection.
+        data = self.page_widget.currentData()
+        if data is not None:
+            self.action_data.page = max(0, int(data) - 1)
+
+    def _on_virtual_page_changed(self, device_id, page):
+        if not Shiboken.isValid(self):
+            return
+        selected = self.action_data.device_id or ""
+        if selected and device_id and selected != device_id:
+            return
+        self._refresh_pages()
 
     def _update_visibility(self):
         cmd = self.action_data.command or "changePage"
+        show_auto = cmd in AUTO_RETURN_COMMANDS
         self.page_row.setVisible(cmd == "changePage")
+        self.auto_return_row.setVisible(show_auto)
+        self.auto_return_seconds_widget.setVisible(
+            show_auto and bool(self.action_data.auto_return)
+        )
 
-    def _send_change_page_now(self) -> bool:
+    def _send_page_command_now(self) -> bool:
         """Shared path for Test button and runtime functor."""
         import gremlin.ui.streamdeck_device
 
@@ -210,24 +439,49 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
         page = self.action_data.page
         if page is None:
             page = 0
+        cmd = self.action_data.command or "changePage"
         profile = resolve_profile_for_device(device_id, page)
-        return bool(bridge.change_page(device_id, int(page), profile))
+        return apply_page_command(
+            device_id,
+            cmd,
+            int(page),
+            auto_return=bool(self.action_data.auto_return),
+            auto_return_seconds=float(self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS),
+            profile=profile,
+        )
 
     @QtCore.Slot()
     def _test_clicked(self):
-        # Sync page from spinner before sending.
-        self._page_changed()
-        if self._send_change_page_now():
+        # Sync page from combo before sending (Change Page only).
+        if (self.action_data.command or "") == "changePage":
+            self._page_changed()
+        cmd = self.action_data.command or "changePage"
+        try:
+            from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+            connected = bool(StreamDeckBridge().plugin_is_connected)
+        except Exception:
+            connected = False
+        ok = self._send_page_command_now()
+        if ok:
+            extra = ""
+            if cmd in AUTO_RETURN_COMMANDS and self.action_data.auto_return:
+                secs = float(self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS)
+                extra = f"\n\nAuto-return to the previous page in {secs:g} s."
+            label = dict(FUNCTIONS).get(cmd, "Page")
+            detail = (
+                "Returned to the previously displayed page."
+                if cmd == "returnToLast"
+                else (
+                    "Live JG Ex keys should show that bank's titles. "
+                    "Presses now run mappings for that page."
+                )
+            )
             gremlin.ui.ui_common.MessageBoxInfo(
                 title="Map to Stream Deck",
-                prompt=(
-                    "Change Page sent.\n\n"
-                    "JG Ex Button keys should update to P1 / P2 / … titles "
-                    "and one key flashes OK. Stream Deck is not closed or restarted.\n\n"
-                    "Be on profile JG Ex XL with JG Ex Button actions visible."
-                ),
+                prompt=f"{label} activated.\n\n{detail}{extra}",
             )
-        else:
+        elif not connected:
             gremlin.ui.ui_common.MessageBoxWarning(
                 title="Map to Stream Deck",
                 prompt=(
@@ -235,20 +489,44 @@ class MapToStreamDeckWidget(gremlin.input_item.AbstractActionWidget):
                     "Enable the Stream Deck bridge and confirm the PI shows Connected."
                 ),
             )
-
+        elif cmd == "returnToLast":
+            gremlin.ui.ui_common.MessageBoxWarning(
+                title="Map to Stream Deck",
+                prompt=(
+                    "No previous page is stored yet.\n"
+                    "Change to another page first, then use Return to Last."
+                ),
+            )
+        else:
+            gremlin.ui.ui_common.MessageBoxWarning(
+                title="Map to Stream Deck",
+                prompt="Could not change page. Check the Stream Deck bridge connection.",
+            )
     @QtCore.Slot()
     def _device_changed(self):
         self.action_data.device_id = self.device_widget.currentData() or ""
+        self._refresh_pages()
 
     @QtCore.Slot()
     def _function_changed(self):
         self.action_data.command = self.function_widget.currentData() or "changePage"
         self._update_visibility()
+        if (self.action_data.command or "") == "changePage":
+            self._refresh_pages()
 
     @QtCore.Slot()
     def _page_changed(self):
-        value = int(self.page_widget.value())
-        self.action_data.page = max(0, value - 1)
+        data = self.page_widget.currentData()
+        if data is None:
+            return
+        self.action_data.page = max(0, int(data) - 1)
+
+    def _auto_return_toggled(self, checked: bool):
+        self.action_data.auto_return = bool(checked)
+        self._update_visibility()
+
+    def _auto_return_seconds_changed(self, value: float):
+        self.action_data.auto_return_seconds = max(0.1, float(value))
 
     def _press_changed(self, checked: bool):
         self.action_data.execute_on_press = checked
@@ -295,16 +573,29 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
             if len(devices) == 1:
                 device_id = next(iter(devices.keys()))
 
-        if cmd == "changePage":
+        if cmd in PAGE_COMMANDS:
             page = self.action_data.page
             if page is None:
                 page = 0
-            profile = resolve_profile_for_device(device_id, page)
+            label = dict(FUNCTIONS).get(cmd, cmd)
             syslog.info(
-                f"Map to Stream Deck: Change Page -> profile={profile} page={int(page)+1} "
+                f"Map to Stream Deck: {label} "
                 f"device={device_id[:12] if device_id else '?'}"
+                + (
+                    f" (auto-return {float(self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS):g}s)"
+                    if self.action_data.auto_return
+                    else ""
+                )
             )
-            bridge.change_page(device_id, int(page), profile)
+            apply_page_command(
+                device_id,
+                cmd,
+                int(page),
+                auto_return=bool(self.action_data.auto_return),
+                auto_return_seconds=float(
+                    self.action_data.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS
+                ),
+            )
         else:
             syslog.warning(f"Map to Stream Deck: unsupported function [{cmd}]")
 
@@ -314,7 +605,7 @@ class MapToStreamDeckFunctor(gremlin.base_profile.AbstractFunctor):
 class MapToStreamDeck(gremlin.input_item.AbstractAction):
     name = "Map to Stream Deck"
     tag = "map-to-streamdeck"
-    hint = "Control a connected Stream Deck (Change Page, …)"
+    hint = "Control a connected Stream Deck (Change / Next / Previous / Return to Last)"
 
     input_types = [
         InputType.JoystickButton,
@@ -338,6 +629,8 @@ class MapToStreamDeck(gremlin.input_item.AbstractAction):
         self.command = "changePage"
         self.device_id = ""
         self.page = 0
+        self.auto_return = False
+        self.auto_return_seconds = DEFAULT_AUTO_RETURN_SECONDS
         self.execute_on_press = True
         self.execute_on_release = False
         self.button_id = ""
@@ -366,6 +659,12 @@ class MapToStreamDeck(gremlin.input_item.AbstractAction):
             self.page = max(0, int(page))
         else:
             self.page = 0
+        self.auto_return = safe_read(node, "auto-return", bool, False)
+        try:
+            seconds = float(safe_read(node, "auto-return-seconds", float, DEFAULT_AUTO_RETURN_SECONDS))
+        except (TypeError, ValueError):
+            seconds = DEFAULT_AUTO_RETURN_SECONDS
+        self.auto_return_seconds = max(0.1, seconds)
         self.execute_on_press = safe_read(node, "on-press", bool, True)
         self.execute_on_release = safe_read(node, "on-release", bool, False)
         if not self.execute_on_press and not self.execute_on_release:
@@ -382,6 +681,11 @@ class MapToStreamDeck(gremlin.input_item.AbstractAction):
         node.set("device-id", self.device_id or "")
         if self.page is not None:
             node.set("page", safe_format(int(self.page), int))
+        node.set("auto-return", safe_format(bool(self.auto_return), bool))
+        node.set(
+            "auto-return-seconds",
+            safe_format(float(self.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS), float),
+        )
         node.set("on-press", safe_format(self.execute_on_press, bool))
         node.set("on-release", safe_format(self.execute_on_release, bool))
         return node
@@ -394,7 +698,24 @@ class MapToStreamDeck(gremlin.input_item.AbstractAction):
         table.addField("Device", self.device_id or "(auto)")
         if self.command == "changePage":
             page_display = (int(self.page) + 1) if self.page is not None else 1
-            table.addField("Page", str(page_display))
+            try:
+                from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+                bridge = StreamDeckBridge()
+                did = self.device_id or ""
+                if not did and bridge.devices:
+                    did = next(iter(bridge.devices.keys()))
+                title = bridge.page_name(did, page_display) if did else f"Page {page_display}"
+                if title and title != f"Page {page_display}":
+                    page_display = f"{page_display}. {title}"
+                else:
+                    page_display = str(page_display)
+            except Exception:
+                page_display = str(page_display)
+            table.addField("Page", page_display)
+        if self.command in PAGE_COMMANDS and self.auto_return:
+            secs = float(self.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS)
+            table.addField("Auto-return", f"{secs:g} s")
         return table.to_html()
 
 

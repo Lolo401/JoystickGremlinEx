@@ -479,6 +479,7 @@ class OptionsDialog(ui_common.BaseDialogUi):
         self._create_profile_page()
         self._create_verbose_page()
         self._create_osc_page()
+        self._create_streamdeck_page()
         self._create_vigem_page()
         self._create_simconnect_page()
         self._create_reporting_page()
@@ -2109,7 +2110,16 @@ Note that firewall rules must allow traffic on the selected IP addresses/ports f
 
         page_layout.addWidget(info_box)
 
-        # Stream Deck plugin bridge
+        page_layout.addStretch()
+
+        content_widget = gremlin.ui.ui_common.QScrollableWidget(page_widget)
+        self.tab_container.addTab(content_widget, "OSC/MIDI")
+
+    def _create_streamdeck_page(self):
+        """Creates the Stream Deck bridge / plugin options page."""
+        page_widget = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page_widget)
+
         page_layout.addWidget(QtWidgets.QLabel("Stream Deck (Elgato plugin bridge):"))
         sd_container = QtWidgets.QWidget()
         sd_container.setContentsMargins(8, 0, 0, 0)
@@ -2135,17 +2145,35 @@ Note that firewall rules must allow traffic on the selected IP addresses/ports f
         sd_layout.addWidget(self.streamdeck_bridge_port, 1, 1)
         page_layout.addWidget(sd_container)
 
+        install_row = QtWidgets.QWidget()
+        install_row.setContentsMargins(8, 0, 0, 0)
+        install_layout = QtWidgets.QHBoxLayout(install_row)
+        install_layout.setContentsMargins(0, 0, 0, 0)
+        self.streamdeck_install_plugin_btn = gremlin.ui.ui_common.QDataPushButton(
+            "Install Stream Deck plugin…"
+        )
+        self.streamdeck_install_plugin_btn.setToolTip(
+            "Copy the JG Ex plugin into Elgato Stream Deck’s Plugins folder. "
+            "Quit Stream Deck software first, then relaunch it after install."
+        )
+        self.streamdeck_install_plugin_btn.clicked.connect(self._streamdeck_install_plugin)
+        install_layout.addWidget(self.streamdeck_install_plugin_btn)
+        install_layout.addStretch()
+        page_layout.addWidget(install_row)
+
         sd_msg = (
-            "Install the JG Ex Stream Deck plugin, keep Elgato Stream Deck software running, "
+            "Install the JG Ex Stream Deck plugin (button above), keep Elgato Stream Deck software running, "
             "and place JG Ex Button / JG Ex Dial actions on keys. Icons and titles stay in Stream Deck software. "
-            "Default bridge: ws://127.0.0.1:9020"
+            "Default bridge: ws://127.0.0.1:9020\n\n"
+            "Plugin folder is normally:\n"
+            "%AppData%\\Elgato\\StreamDeck\\Plugins\\"
         )
         page_layout.addWidget(gremlin.ui.ui_common.QInfoBox(sd_msg))
 
         page_layout.addStretch()
 
         content_widget = gremlin.ui.ui_common.QScrollableWidget(page_widget)
-        self.tab_container.addTab(content_widget, "OSC/MIDI")
+        self.tab_container.addTab(content_widget, "Stream Deck")
 
     def _handle_verbose_all_off(self, widget):
         for widget in self._verbose_mode_widgets.values():
@@ -2578,6 +2606,58 @@ Note that firewall rules must allow traffic on the selected IP addresses/ports f
                 streamdeck_ui.ensure_bridge_started()
         except Exception as err:
             syslog.error(f"STREAMDECK: port change error: {err}")
+
+    @QtCore.Slot()
+    def _streamdeck_install_plugin(self):
+        """Copy the bundled Stream Deck plugin into the user's Elgato Plugins folder."""
+        from gremlin.ui import streamdeck_device as streamdeck_ui
+
+        hint = streamdeck_ui.streamdeck_plugins_dir_hint()
+        dest = streamdeck_ui.default_streamdeck_plugins_dir()
+
+        if dest is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Select Stream Deck Plugins folder",
+                "Could not find the usual Elgato Stream Deck Plugins folder.\n\n"
+                "Please select the Plugins folder. It is normally located at:\n\n"
+                f"{hint}\n\n"
+                "(AppData → Roaming → Elgato → StreamDeck → Plugins)",
+            )
+            start_dir = os.path.dirname(hint) if hint else ""
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                "Select Stream Deck Plugins folder",
+                start_dir,
+                QtWidgets.QFileDialog.Option.ShowDirsOnly,
+            )
+            if not chosen:
+                return
+            dest = chosen
+            # If the user picked StreamDeck or Elgato, prefer / create Plugins under StreamDeck.
+            base = os.path.basename(dest.rstrip("\\/")).lower()
+            if base == "streamdeck":
+                dest = os.path.join(dest, "Plugins")
+            elif base == "elgato":
+                dest = os.path.join(dest, "StreamDeck", "Plugins")
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Install Stream Deck plugin",
+            "Quit Stream Deck software before installing, then relaunch it afterward.\n\n"
+            f"Install the JG Ex plugin into:\n{dest}\n\n"
+            "Continue?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        ok, message = streamdeck_ui.install_streamdeck_plugin(dest)
+        if ok:
+            QtWidgets.QMessageBox.information(self, "Stream Deck plugin", message)
+        else:
+            QtWidgets.QMessageBox.warning(self, "Stream Deck plugin", message)
 
     @QtCore.Slot()
     def _osc_input_port(self):

@@ -1,60 +1,75 @@
 # Stream Deck (Elgato plugin bridge)
 
-GremlinEx can use Elgato Stream Deck hardware through a dedicated **Stream Deck plugin** and a localhost WebSocket bridge. Stream Deck software remains running and owns USB, so other decks can still run Wave Link or other plugins on the same PC.
+GremlinEx drives Stream Deck hardware through a **Stream Deck plugin** and a localhost WebSocket bridge. Stream Deck software remains running and owns USB (Wave Link / multi-deck safe).
 
-This path does **not** require Bitfocus Companion or OSC for those keys. Companion + OSC remain available for glass surfaces and users who prefer that stack.
+This path does **not** require Bitfocus Companion or OSC for those keys. The model is **Companion-style (Scope B)**: GEX owns unlimited virtual pages (banks), surface variables, multi-step keys, and live feedback — while existing GEX actions (vJoy, Macro, SimConnect, OSC, State, …) remain the connection layer.
 
 ## Setup
 
-1. Install the plugin from `streamdeck_plugin/` (see that folder’s README). CodePath must be `app.html` (classic Stream Deck HTML host).
-2. In GremlinEx **Options → OSC/MIDI**, enable **Stream Deck bridge** (default port `9020`).
-3. Place **JG Ex Button** (or **JG Ex Dial**) actions on Stream Deck keys. Customize icons/titles in Stream Deck software.
-4. Property Inspector status should show **Connected to JG Ex**. Each connected deck gets its own GEX device tab (named from Elgato, e.g. **Stream Deck XL**, **Stream Deck +**) with **Plugin: connected**.
-5. Set a stable **Button ID** and **Page** in the Property Inspector (Page defaults to `1`).
-6. Map the auto-created inputs on that deck’s GremlinEx tab (containers / Map to VJoy / etc.).
+1. Install the plugin from `streamdeck_plugin/` (see that folder’s README), or use **Options → Stream Deck → Install Stream Deck plugin…**. CodePath must be `app.html`.
+2. In GremlinEx **Options → Stream Deck**, enable **Stream Deck bridge** (default port `9020`).
+3. Place **JG Ex Button** (and **JG Ex Dial** if needed) on **one** Elgato profile page covering the whole grid — that page is the hardware viewport.
+4. Property Inspector should show **Connected to JG Ex**. Each connected deck gets its own GEX device tab.
+5. On the GEX Stream Deck tab: **left = pages**, **center = grid**, **right = actions** for the selected key (Overlay-inspired layout).
 
-## Page-scoped mappings
+## Virtual pages (unlimited)
 
-GEX identifies each Stream Deck input as `deviceId : kind : page : buttonId` (page is 1-based).
+GEX identifies each mapping as `deviceId : kind : gexPage : slot` (1-based GEX page, slot from grid coordinates).
 
-- The same **Button ID** on different Elgato profile pages is intentional and supported — each page is a separate GEX input (e.g. `P1 · …` vs `P2 · …`).
-- Set **Page** on each JG Ex Button / Dial to match the Elgato profile page that hosts it. Seeded JG Ex multi-page profiles write this automatically.
-- Only the currently visible page’s keys are live (Elgato only sends events for visible actions); profile mappings for other pages are kept.
-- Older profiles without a `page` value are treated as **page 1**.
+- Add as many pages as you need in the left page list (not limited by Elgato’s ~10 pages).
+- **Map to Stream Deck → Change / Next / Previous / Return to Last** sets the active bank and paints titles/images onto live keys.
+- Hardware presses resolve against the **active GEX page** + physical slot.
+- Elgato profile pages / folders are optional cosmetics — not the source of truth for GEX banks.
 
-This is separate from **Map to Stream Deck → Change Page** title feedback (`P1` / `P2` via `setTitle`). Real per-page bindings use Elgato profile pages plus the **Page** setting.
+## Surface completeness (designer)
+
+On a selected key:
+
+- Grid **Preview: Released | Pressed** toggle shows that state's icon/title/style on the designer keys.
+- **Released / Pressed** columns — each has icon, up to 3 title lines, and its own Style (font/align/background). Blank pressed title falls back to released.
+- **Clear cell** / right-click Delete; **Wipe page** clears the edit page.
+- Drag keys onto each other to swap; right-click Copy / Paste.
+- Mapped JG Ex keys show a **green ●** badge. Keys that are **not** JG Ex Buttons on the hardware (other Stream Deck plugins) stay visible with a **red ●**. They can still get an icon and background in the designer (for GEX / overlay); mappings stay disabled until a JG Ex Button occupies that slot. Live presses briefly highlight the cell.
+- **Stream Deck +** shows a **Dials** row under the key grid.
+
+Right pane stays the normal **InputItemMappingWidget** (no duplicate action UI).
+
+## Surface variables
+
+- Aliased variables sync from GEX States; changing a variable can push back to its alias.
+- Variable/state changes re-evaluate appearance and **coalesced-paint** the active page.
+
+## Multi-step keys
+
+Use GEX containers on the right (including **Chain** with **Add Step**) for multi-step behavior on a Stream Deck key. Per-key Steps mode settings remain in the profile model for older mappings but are no longer exposed in the designer toolbar.
 
 ## Multi-device
 
-- **One GEX tab per physical Stream Deck** (joystick-like). Inputs for a deck stay under that deck’s stable GUID.
-- Tabs appear when the plugin reports the deck connected (`device` / `willAppear`) and hide when it disconnects; profile mappings are kept.
-- Old profiles that stored everything under a single **Stream Deck** GUID still show a **Stream Deck (legacy)** tab until those inputs are migrated (happens automatically when that deck reconnects and `device-id` is present).
+- **One GEX tab per physical Stream Deck**.
+- Tabs appear when the plugin reports the deck connected and hide on disconnect; profile mappings are kept.
+- Old profiles under a single **Stream Deck** GUID still show a **Stream Deck (legacy)** tab until migrated.
 
-## Plugin profiles (Change Page)
+## Map to Stream Deck
 
-The plugin ships **one profile per Elgato DeviceType** (pages are pages inside that profile — never one profile per page):
+1. **Device** — pick a connected Stream Deck.
+2. **Function** — **Change Page**, **Next Page**, **Previous Page**, or **Return to Last**.
+3. **Page** — for Change Page: 1-based bank number (unlimited).
+4. Optional **Auto-return** (Change / Next / Previous) — after a delay, go back to the page that was active before the switch.
+5. **Return to Last** — immediately restore the page shown before the current one (history updates on every page change).
+6. Optional **Test** switches immediately.
 
-| DeviceType | Profile | Typical hardware |
-|---|---|---|
-| 2 | `profiles/jgex-xl` | Stream Deck XL |
-| 7 | `profiles/jgex-plus` | Stream Deck + |
-| 0 | `profiles/jgex` | Classic / MK.2 |
-| 1 | `profiles/jgex-mini` | Mini |
-| 9 | `profiles/jgex-neo` | Neo |
+## Designer tips
 
-Stream Deck **+** keys use **JG Ex Button**; encoders use **JG Ex Dial**.
+- Right-click a key → **Link to page** to mirror the same position on another GEX bank (look + mappings). Linked keys show a purple **↗P#** badge; edit the source page instead of copy/paste.
+- **Return to Last** (Map to Stream Deck) restores the previously shown bank.
 
-## Two-way control
+**In scope:** surface editor polish, variables, multi-step, live feedback, integration with existing GEX actions/containers.
 
-Use the **Map to Stream Deck** action on any button-like input:
+**Out of scope (for now):** Companion connection modules (OBS/Twitch/…), Loupedeck/other USB surfaces, Satellite/cloud, full Companion config import, taking USB from Elgato.
 
-1. **Device** — pick a Stream Deck reported by the connected plugin (Refresh if needed).
-2. **Function** — currently **Change Page**.
-3. **Page** — page number on that device’s **JG Ex** plugin profile (`1` = first page).
-4. Optional **Test** button sends Change Page immediately.
-
-**Important (Elgato SDK):** plugins cannot change pages on arbitrary user profiles (e.g. “Profile 1”). Change Page switches to the bundled JG Ex profile for that device type at the requested page. Close the Stream Deck editor, accept the profile install if prompted, and place your buttons on that profile’s pages.
+Suggest changes to Muchimi as a **PR series** (surface polish → variables → multi-step → feedback), not one mega-PR.
 
 ## Related
 
 - Companion / OSC panel setup: [usage.md](usage.md#osc-device-open-sound-control), [mapping.md](mapping.md), [resources.md](resources.md)
+- Cursor rule: `.cursor/rules/streamdeck-integration.mdc`
