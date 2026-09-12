@@ -1211,7 +1211,14 @@ class MacroWidget(gremlin.input_item.AbstractActionWidget):
         self._populate_ui()
 
     def _update_state(self):
-        # update the sequence
+        # update the sequence — never rebuild Macro UI during profile load or
+        # off the UI thread (StateData.crud can fire while XML is parsed).
+        if gremlin.shared_state.profile_loading:
+            return
+        if not gremlin.util.is_ui_thread():
+            return
+        if not Shiboken.isValid(self):
+            return
         self._populate_ui()
 
     def _create_ui(self):
