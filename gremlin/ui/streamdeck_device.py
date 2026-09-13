@@ -1410,7 +1410,12 @@ class StreamDeckBridge(QtCore.QObject):
             return (custom, max(len(names), len(order)))
 
         for live_id in targets:
-            if not live_id or live_id in self._page_names:
+            if not live_id:
+                continue
+            live_custom, _live_richness = _custom_score(live_id)
+            # Skip only when this live deck already has real custom names.
+            # Generic "Page N" placeholders must still adopt richer orphans.
+            if live_custom > 0:
                 continue
             # Prefer an orphan that already matches this deck's profile input pages.
             input_pages = {item.page for item in self._iter_device_inputs(live_id)}
@@ -1430,7 +1435,9 @@ class StreamDeckBridge(QtCore.QObject):
             # Require either page overlap with profile inputs, or a uniquely rich orphan.
             if best_score[0] <= 0 and not (len(orphans) == 1 and best_score[1] > 0):
                 if len(all_live) != 1 or len(orphans) != 1:
-                    continue
+                    # Still allow upgrade when live is empty/generic and orphan is rich.
+                    if best_score[1] <= live_custom:
+                        continue
             self._page_names[live_id] = dict(self._page_names.get(best) or {})
             if best in self._page_order:
                 self._page_order[live_id] = list(self._page_order[best])
@@ -1489,7 +1496,7 @@ class StreamDeckBridge(QtCore.QObject):
         try:
             cfg = {}
             if hasattr(profile, "_readConfig"):
-                cfg = dict(profile._readConfig() or {})
+                cfg = dict(profile._readConfig(force=True) or {})
             payload = dict(cfg.get(STREAMDECK_PAGES_CONFIG_KEY) or {})
             device_ids = [device_id] if device_id else sorted(
                 set(list(self._page_names.keys()) + list(self._page_order.keys()))
@@ -1502,6 +1509,21 @@ class StreamDeckBridge(QtCore.QObject):
                     str(p): self.page_name(did, p)
                     for p in order
                 }
+                # Never replace a rich saved name map with an empty/generic one.
+                existing = payload.get(did) or {}
+                existing_names = existing.get("names") or {}
+                existing_custom = sum(
+                    1
+                    for pk, pv in existing_names.items()
+                    if pv and str(pv) != f"Page {pk}"
+                )
+                new_custom = sum(
+                    1
+                    for pk, pv in names.items()
+                    if pv and str(pv) != f"Page {pk}"
+                )
+                if existing_custom > 0 and new_custom == 0:
+                    continue
                 payload[did] = {"order": order, "names": names}
             profile._setConfig(STREAMDECK_PAGES_CONFIG_KEY, payload)
         except Exception as err:

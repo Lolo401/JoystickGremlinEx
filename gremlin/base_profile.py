@@ -4812,32 +4812,38 @@ class Profile:
             self._profile_fname = None
             self._dirty = False
 
-    def _readConfig(self) -> dict:
-        """reads the profile config, ensuring it is done on the UI thread"""
-        completed = False
+    def _readConfig(self, force: bool = False) -> dict:
+        """reads the profile config, ensuring it is done on the UI thread
 
-        def nonlocal_set(var, value):
-            nonlocal completed
-            var = value  # noqa: F841
-            completed = True
-
+        :param force: when True, ignore the in-memory cache and re-read the sidecar
+        """
+        if force:
+            self._config_data_read = False
         if gremlin.util.is_ui_thread():
             return self._readConfig_ui()
-        else:
-            result = None
-            time_max = time.time() + 2.0  # maximum wait time of 5 seconds
-            gremlin.util.InvokeUiMethod(lambda: nonlocal_set(result, self._readConfig_ui()))
-            while not completed and time.time() < time_max:
-                time.sleep(0.01)
-            if not completed:
-                syslog.warning("Profile config read timed out")
-            return result
+
+        result = {"value": None, "done": False}
+
+        def _do_read():
+            try:
+                result["value"] = self._readConfig_ui()
+            finally:
+                result["done"] = True
+
+        time_max = time.time() + 2.0
+        gremlin.util.InvokeUiMethod(_do_read)
+        while not result["done"] and time.time() < time_max:
+            time.sleep(0.01)
+        if not result["done"]:
+            syslog.warning("Profile config read timed out")
+            return {}
+        return result["value"] if isinstance(result["value"], dict) else {}
 
     def _readConfig_ui(self) -> dict:
         """reads the profile config"""
         fname = self._profile_config_fname
         if self._config_data_read:
-            return self._config_data
+            return self._config_data if isinstance(self._config_data, dict) else {}
 
         assert gremlin.util.is_ui_thread(), "Profile config read must be done on the UI thread"
 
@@ -4856,6 +4862,9 @@ class Profile:
                 # failed to read
                 pass
 
+        if not isinstance(data, dict):
+            data = {}
+
         self._config_data = data
         self._config_data_read = True
 
@@ -4863,22 +4872,27 @@ class Profile:
 
     def _writeConfig(self, data: dict):
         fname = self._profile_config_fname
+        if not isinstance(data, dict):
+            data = {}
         if fname:
             try:
-                with open(fname, "w") as hdl:
+                with open(fname, "w", encoding="utf-8") as hdl:
                     encoder = json.JSONEncoder(sort_keys=True, indent=4)
                     hdl.write(encoder.encode(data))
                     hdl.flush()
-                    hdl.close()
             except Exception:
                 pass
 
         self._config_data = data
+        self._config_data_read = True
 
     def _setConfig(self, key, value):
         """sets a configuration value and saves to the profile config file"""
-
-        data = self._readConfig()  # get the profile config
+        # Always merge against on-disk JSON. A stale in-memory cache previously
+        # wiped unrelated keys (e.g. streamdeck_pages) when overlay/last_input saved.
+        data = self._readConfig(force=True)
+        if not isinstance(data, dict):
+            data = {}
         data[key] = value
         self._writeConfig(data)
 
@@ -4894,7 +4908,9 @@ class Profile:
     def setLastInput(self, device_guid, input_type, input_id):
         """sets the last profile input"""
         if self._save_config_enabled:
-            data = self._readConfig()  # get the profile config
+            data = self._readConfig(force=True)  # merge against disk, never wipe sibling keys
+            if not isinstance(data, dict):
+                data = {}
             if device_guid is None:
                 # remove existing device, input and id
                 if "last_device_guid" in data:
