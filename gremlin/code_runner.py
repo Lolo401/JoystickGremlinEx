@@ -435,6 +435,9 @@ class CodeRunner:
             for device_node in vjoy_devices:
                 if not device_node.enabled or not device_node.connected:
                     continue
+                # Skip unmatched / stub virtual devices (vjoy_id defaults to -1).
+                if not (isinstance(device_node.vjoy_id, int) and 1 <= device_node.vjoy_id <= 16):
+                    continue
 
                 device_id = device_node.device_id
 
