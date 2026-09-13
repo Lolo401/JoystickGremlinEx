@@ -33,6 +33,8 @@ Plugins will also need to handle external dependencies that are not part of the 
 
 Is is recommended to stay away from UI elements in a user plugin but it is completely possible to leverage the QT library inside a user plugin.  A user interface for a plugin is a very advanced feature and at this point, you are most likely considering a custom action or container plugin rather than a user plugin.  If this is the case, the source code for actions/containers should be examined as they require a very specific structure to be loaded and executed.
 
+`ButtonVariable` (plugin variable type Action) can add a launch button to the Plugins tab configuration panel. The shipped [overlay](obs_overlay.md) plugin uses this to switch to the Overlay tab.
+
 ## Load behavior
 
 A user plugin is loaded whenever a profile starts.  This will identify any exceptions/errors in the plugin when the profile starts.  

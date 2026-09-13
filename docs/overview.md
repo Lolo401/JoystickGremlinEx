@@ -70,7 +70,9 @@ It is generally recommended to use GremlinEx to map to default settings in a gam
 
 ### Input and output from/to glass surface panels (touchscreens)
 
-GremlinEx map input from/to glass surfaces (touch screens) and hardware panels like Streamdeck using the OSC protocol using open source software.  Using OSC open source software like Open Stage Control, you can design custom glass surface input screens and map them over the network to GremlinEx.   GremlinEx supports both message triggers, and axis including multi-axis data inboud from a glass surface, such as a slider or an XY pad.  
+GremlinEx map input from/to glass surfaces (touch screens) and hardware panels like Streamdeck using the OSC protocol using open source software.  Using OSC open source software like Open Stage Control, you can design custom glass surface input screens and map them over the network to GremlinEx.   GremlinEx supports both message triggers, and axis including multi-axis data inboud from a glass surface, such as a slider or an XY pad.
+
+For a joystick visualization overlay in OBS (chromakey window capture) or as an on-screen HUD, see the [overlay designer](obs_overlay.md).  
 
 #### Networked devices support
 

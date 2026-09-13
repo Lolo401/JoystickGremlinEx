@@ -38,7 +38,8 @@ for root, _, files in os.walk("icons"):
 added_files = [
     ("about", "about"),
     ("doc", "doc"),
-    ("icons","icons")
+    ("icons","icons"),
+    ("gremlin/ui/streamdeck_icon_library", "gremlin/ui/streamdeck_icon_library"),
 ]
 
 added_files.extend(action_plugins_files)
@@ -46,17 +47,21 @@ added_files.extend(icon_files)
 added_files.extend(container_plugins_files)
 added_files.extend(doc_files)
 added_files.extend(xml_files)
-added_binaries = [
+_binary_candidates = [
     ("vjoy/vJoyInterface.dll", "."),
     ("dill.dll", "."),
     ("vigem/ViGEmClient.dll", "."),
-    ("SimConnect.dll","."),
-    ("hidapi.dll","."),
-    ("ffmpeg/ffmpeg.exe","."),
-    ("ffmpeg/ffprobe.exe","."),
-
-
+    ("SimConnect.dll", "."),
+    ("hidapi.dll", "."),
+    ("ffmpeg/ffmpeg.exe", "."),
+    ("ffmpeg/ffprobe.exe", "."),
 ]
+added_binaries = []
+for src, dest in _binary_candidates:
+    if os.path.exists(src):
+        added_binaries.append((src, dest))
+    else:
+        print(f"WARNING: skipping missing binary {src}")
 
 '''
 excludes=["torch",
@@ -96,7 +101,19 @@ a = Analysis(
         "pydub",
         "faster_whisper",
         "pycaw",
-        "pycountry"] +  collect_submodules('encodings'),
+        "pycountry",
+        "gremlin.ui.obs_overlay",
+        "gremlin.ui.obs_overlay.bindings",
+        "gremlin.ui.obs_overlay.designer",
+        "gremlin.ui.obs_overlay.inspector",
+        "gremlin.ui.obs_overlay.model",
+        "gremlin.ui.obs_overlay.overlay_window",
+        "gremlin.ui.obs_overlay.palettes",
+        "gremlin.ui.obs_overlay.shapes",
+        "gremlin.ui.obs_overlay.templates",
+        "gremlin.ui.obs_overlay.touch",
+        "gremlin.ui.obs_overlay.widgets",
+        ] +  collect_submodules('encodings'),
     hookspath=None,
     runtime_hooks=None,
     excludes=["torch",
