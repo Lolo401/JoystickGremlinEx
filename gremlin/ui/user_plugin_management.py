@@ -220,8 +220,10 @@ class ModuleManagementController(QtCore.QObject):
 
                 # Update profile variable properties if needed
                 profile_var = instance.get_variable(var.label)
+                # Always refresh optional flag from the Python definition so plugins
+                # can mark new PhysicalInputs optional without forcing a re-add.
+                profile_var.is_optional = bool(var.is_optional)
                 if profile_var.type is None:
-                    profile_var.is_optional = var.is_optional
                     profile_var.type = var.variable_type
                     profile_var.value = var.value
                     instance.set_variable(var.label, profile_var)
