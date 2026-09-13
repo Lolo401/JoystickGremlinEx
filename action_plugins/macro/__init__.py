@@ -203,6 +203,7 @@ class MacroActionEditor(QtWidgets.QWidget):
             "vJoy": MacroActionEditor.ActionTypeData("vJoy", self._vjoy_ui, gremlin.macro.VJoyMacroAction),
             "Remote Control": MacroActionEditor.ActionTypeData("Remote Control", self._remote_control_ui, gremlin.macro.RemoteControlAction),
             "State": MacroActionEditor.ActionTypeData("State", self._state_ui, gremlin.macro.StateAction),
+            "Stream Deck": MacroActionEditor.ActionTypeData("Stream Deck", self._streamdeck_ui, gremlin.macro.StreamDeckAction),
             "Description": MacroActionEditor.ActionTypeData("Description", self._description_ui, gremlin.macro.MacroDescriptionAction),
         }
 
@@ -312,6 +313,8 @@ class MacroActionEditor(QtWidgets.QWidget):
             self.model.set_entry(gremlin.macro.RemoteControlAction(), self.index.row())
         elif value == "State":
             self.model.set_entry(gremlin.macro.StateAction(), self.index.row())
+        elif value == "Stream Deck":
+            self.model.set_entry(gremlin.macro.StreamDeckAction(), self.index.row())
         elif value == "Description":
             self.model.set_entry(gremlin.macro.MacroDescriptionAction(), self.index.row())
         else:
@@ -713,6 +716,262 @@ class MacroActionEditor(QtWidgets.QWidget):
     def _handle_description_log_changed(self, widget, checked: bool):
         action = widget.data
         action.log = checked
+
+    def _streamdeck_ui(self):
+        """Stream Deck page-control step (mirrors Map to Stream Deck)."""
+        from action_plugins.map_to_streamdeck import (
+            AUTO_RETURN_COMMANDS,
+            DEFAULT_AUTO_RETURN_SECONDS,
+            FUNCTIONS,
+            apply_page_command,
+            resolve_profile_for_device,
+        )
+
+        action = self.model.get_entry(self.index.row())
+        if not isinstance(action, gremlin.macro.StreamDeckAction):
+            return
+
+        device_widget = gremlin.ui.ui_common.QDataComboBox()
+        device_widget.setMinimumWidth(220)
+        refresh_btn = QtWidgets.QPushButton("Refresh")
+        refresh_btn.setToolTip("Reload connected Stream Deck devices from the bridge")
+        test_btn = QtWidgets.QPushButton("Test")
+        test_btn.setToolTip("Run this page function now")
+
+        function_widget = gremlin.ui.ui_common.QDataComboBox()
+        for value, label in FUNCTIONS:
+            function_widget.addItem(label, value)
+        idx = function_widget.findData(action.command or "changePage")
+        function_widget.setCurrentIndex(idx if idx >= 0 else 0)
+
+        page_widget = gremlin.ui.ui_common.QDataComboBox()
+        page_widget.setMinimumWidth(220)
+        page_widget.setToolTip(
+            "GEX virtual page (Companion-style bank). Unlimited — not limited by Elgato's profile pages."
+        )
+
+        auto_return_widget = QtWidgets.QCheckBox("Auto-return to previous page")
+        auto_return_widget.setChecked(bool(action.auto_return))
+        auto_return_seconds = QtWidgets.QDoubleSpinBox()
+        auto_return_seconds.setRange(0.1, 3600.0)
+        auto_return_seconds.setDecimals(1)
+        auto_return_seconds.setSingleStep(0.5)
+        auto_return_seconds.setSuffix(" s")
+        try:
+            seconds = float(action.auto_return_seconds)
+        except (TypeError, ValueError):
+            seconds = DEFAULT_AUTO_RETURN_SECONDS
+        auto_return_seconds.setValue(max(0.1, seconds))
+
+        page_row = gremlin.ui.ui_common.getHContainer(page_widget, "Page:", widget_only=True)
+        auto_return_row = gremlin.ui.ui_common.getHContainer(
+            [auto_return_widget, auto_return_seconds],
+            widget_only=True,
+        )
+
+        self.ui_elements["sd_device"] = device_widget
+        self.ui_elements["sd_function"] = function_widget
+        self.ui_elements["sd_page"] = page_widget
+        self.ui_elements["sd_page_row"] = page_row
+        self.ui_elements["sd_auto_return"] = auto_return_widget
+        self.ui_elements["sd_auto_return_seconds"] = auto_return_seconds
+        self.ui_elements["sd_auto_return_row"] = auto_return_row
+
+        def _connected_devices():
+            try:
+                from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+                bridge = StreamDeckBridge()
+                items = []
+                for device_id, info in bridge.devices.items():
+                    name = (info.get("name") or "").strip() or f"Stream Deck ({str(device_id)[:8]})"
+                    dtype = info.get("type")
+                    suffix = f" [type {dtype}]" if dtype not in (None, "") else ""
+                    items.append((str(device_id), f"{name}{suffix}"))
+                items.sort(key=lambda x: x[1].casefold())
+                return items
+            except Exception:
+                return []
+
+        def _page_choices(device_id: str):
+            try:
+                from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+                bridge = StreamDeckBridge()
+                did = device_id or ""
+                if not did and bridge.devices:
+                    did = next(iter(bridge.devices.keys()))
+                pages = bridge.list_pages(did) if did else [1]
+                if not pages:
+                    pages = [1]
+                out = []
+                for page in pages:
+                    name = bridge.page_name(did, page) if did else f"Page {page}"
+                    if name == f"Page {page}":
+                        label = f"{page}. Page {page}"
+                    else:
+                        label = f"{page}. {name}"
+                    out.append((page, label))
+                return out
+            except Exception:
+                return [(1, "1. Page 1")]
+
+        def _refresh_pages():
+            if not Shiboken.isValid(page_widget):
+                return
+            device_id = action.device_id or device_widget.currentData() or ""
+            stored = action.page
+            want = 1 if stored is None else int(stored) + 1
+            choices = _page_choices(device_id)
+            page_nums = {p for p, _ in choices}
+            if want not in page_nums:
+                choices.append((want, f"{want}. Page {want}"))
+                choices.sort(key=lambda x: x[0])
+            page_widget.blockSignals(True)
+            page_widget.clear()
+            select_idx = 0
+            for i, (page, label) in enumerate(choices):
+                page_widget.addItem(label, page)
+                if page == want:
+                    select_idx = i
+            page_widget.setCurrentIndex(select_idx)
+            page_widget.blockSignals(False)
+            data = page_widget.currentData()
+            if data is not None:
+                action.page = max(0, int(data) - 1)
+
+        def _update_visibility():
+            cmd = action.command or "changePage"
+            show_auto = cmd in AUTO_RETURN_COMMANDS
+            page_row.setVisible(cmd == "changePage")
+            auto_return_row.setVisible(show_auto)
+            auto_return_seconds.setVisible(show_auto and bool(action.auto_return))
+
+        def _refresh_devices():
+            if not Shiboken.isValid(device_widget):
+                return
+            selected = action.device_id or ""
+            device_widget.blockSignals(True)
+            device_widget.clear()
+            devices = _connected_devices()
+            if not devices:
+                device_widget.addItem("(no Stream Deck connected)", "")
+            else:
+                for device_id, label in devices:
+                    device_widget.addItem(label, device_id)
+                idx = device_widget.findData(selected) if selected else -1
+                if idx < 0:
+                    idx = 0
+                device_widget.setCurrentIndex(idx)
+                action.device_id = device_widget.currentData() or ""
+            device_widget.blockSignals(False)
+            _refresh_pages()
+            self._update_model()
+
+        def _device_changed():
+            action.device_id = device_widget.currentData() or ""
+            _refresh_pages()
+            self._update_model()
+
+        def _function_changed():
+            action.command = function_widget.currentData() or "changePage"
+            _update_visibility()
+            if action.command == "changePage":
+                _refresh_pages()
+            self._update_model()
+
+        def _page_changed():
+            data = page_widget.currentData()
+            if data is None:
+                return
+            action.page = max(0, int(data) - 1)
+            self._update_model()
+
+        def _auto_return_toggled(checked: bool):
+            action.auto_return = bool(checked)
+            _update_visibility()
+            self._update_model()
+
+        def _auto_return_seconds_changed(value: float):
+            action.auto_return_seconds = max(0.1, float(value))
+            self._update_model()
+
+        def _test_clicked():
+            import gremlin.ui.streamdeck_device
+
+            if (action.command or "") == "changePage":
+                data = page_widget.currentData()
+                if data is not None:
+                    action.page = max(0, int(data) - 1)
+            bridge = gremlin.ui.streamdeck_device.StreamDeckBridge()
+            if not bridge.started:
+                bridge.start()
+            device_id = action.device_id or ""
+            if not device_id and len(bridge.devices) == 1:
+                device_id = next(iter(bridge.devices.keys()))
+                action.device_id = device_id
+            if not device_id:
+                gremlin.ui.ui_common.MessageBoxWarning(
+                    title="Stream Deck",
+                    prompt="No Stream Deck selected or connected.",
+                )
+                return
+            cmd = action.command or "changePage"
+            page = 0 if action.page is None else int(action.page)
+            profile = resolve_profile_for_device(device_id, page)
+            ok = apply_page_command(
+                device_id,
+                cmd,
+                page,
+                auto_return=bool(action.auto_return),
+                auto_return_seconds=float(action.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS),
+                profile=profile,
+            )
+            label = dict(FUNCTIONS).get(cmd, cmd)
+            if ok:
+                gremlin.ui.ui_common.MessageBoxInfo(
+                    title="Stream Deck",
+                    prompt=f"{label} activated.",
+                )
+            else:
+                gremlin.ui.ui_common.MessageBoxWarning(
+                    title="Stream Deck",
+                    prompt="Could not run Stream Deck command. Check the bridge connection.",
+                )
+
+        device_widget.currentIndexChanged.connect(_device_changed)
+        refresh_btn.clicked.connect(_refresh_devices)
+        test_btn.clicked.connect(_test_clicked)
+        function_widget.currentIndexChanged.connect(_function_changed)
+        page_widget.currentIndexChanged.connect(_page_changed)
+        auto_return_widget.toggled.connect(_auto_return_toggled)
+        auto_return_seconds.valueChanged.connect(_auto_return_seconds_changed)
+
+        self.action_layout.addWidget(
+            gremlin.ui.ui_common.getHContainer(
+                [device_widget, refresh_btn, test_btn],
+                "Device:",
+                widget_only=True,
+            )
+        )
+        self.action_layout.addWidget(
+            gremlin.ui.ui_common.getHContainer(function_widget, "Function:", widget_only=True)
+        )
+        self.action_layout.addWidget(page_row)
+        self.action_layout.addWidget(auto_return_row)
+
+        try:
+            from gremlin.ui.streamdeck_device import StreamDeckBridge
+
+            bridge = StreamDeckBridge()
+            if not bridge.started:
+                bridge.start()
+            bridge.devices_changed.connect(_refresh_devices)
+        except Exception:
+            pass
+
+        _refresh_devices()
+        _update_visibility()
 
     def _state_ui(self):
         """state interface"""
@@ -1939,6 +2198,33 @@ To send complex sequences, please look at the sequence container."""
                 action.log = safe_read(child, "log", bool, False)
                 self.sequence.append(action)
 
+            elif child.tag == "streamdeck":
+                from action_plugins.map_to_streamdeck import (
+                    DEFAULT_AUTO_RETURN_SECONDS,
+                    FUNCTIONS,
+                )
+
+                sd_action = gremlin.macro.StreamDeckAction()
+                command = safe_read(child, "command", str, "changePage")
+                if command not in dict(FUNCTIONS):
+                    command = "changePage"
+                sd_action.command = command
+                sd_action.device_id = safe_read(child, "device-id", str, "")
+                page = child.get("page")
+                if page not in (None, ""):
+                    sd_action.page = max(0, int(page))
+                else:
+                    sd_action.page = 0
+                sd_action.auto_return = safe_read(child, "auto-return", bool, False)
+                try:
+                    seconds = float(
+                        safe_read(child, "auto-return-seconds", float, DEFAULT_AUTO_RETURN_SECONDS)
+                    )
+                except (TypeError, ValueError):
+                    seconds = DEFAULT_AUTO_RETURN_SECONDS
+                sd_action.auto_return_seconds = max(0.1, seconds)
+                self.sequence.append(sd_action)
+
     def _generate_xml(self):
         """Generates a XML node corresponding to this object.
 
@@ -2020,6 +2306,22 @@ To send complex sequences, please look at the sequence container."""
                     desc_node.set("description", html.escape(entry.description))
                 desc_node.set("log", safe_format(entry.log, bool))
                 action_list.append(desc_node)
+            elif isinstance(entry, gremlin.macro.StreamDeckAction):
+                from action_plugins.map_to_streamdeck import DEFAULT_AUTO_RETURN_SECONDS
+
+                sd_node = ElementTree.Element("streamdeck")
+                sd_node.set("command", entry.command or "changePage")
+                sd_node.set("device-id", entry.device_id or "")
+                sd_node.set("page", safe_format(int(entry.page or 0), int))
+                sd_node.set("auto-return", safe_format(bool(entry.auto_return), bool))
+                sd_node.set(
+                    "auto-return-seconds",
+                    safe_format(
+                        float(entry.auto_return_seconds or DEFAULT_AUTO_RETURN_SECONDS),
+                        float,
+                    ),
+                )
+                action_list.append(sd_node)
 
         node.append(action_list)
         return node
@@ -2088,6 +2390,19 @@ To send complex sequences, please look at the sequence container."""
                     table.addField("State", state.to_html())
                 else:
                     table.addField("State", "N/A")
+
+            elif isinstance(entry, gremlin.macro.StreamDeckAction):
+                from action_plugins.map_to_streamdeck import FUNCTIONS
+
+                label = dict(FUNCTIONS).get(entry.command or "changePage", entry.command)
+                detail = label
+                if (entry.command or "changePage") == "changePage":
+                    detail += f" → page {int(entry.page or 0) + 1}"
+                if entry.auto_return:
+                    detail += f" (auto-return {float(entry.auto_return_seconds or 5):g}s)"
+                if entry.device_id:
+                    detail += f" [{entry.device_id[:8]}…]"
+                table.addField("Stream Deck", detail)
 
         return table.to_html()
 

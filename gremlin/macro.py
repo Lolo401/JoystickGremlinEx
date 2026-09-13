@@ -1966,6 +1966,98 @@ class StateAction(MacroAbstractAction):
                     syslog.info(f"MACRO: set state [Toggle] (new state: [{'Pressed' if sd.value(self.key) else 'Released'}])")
 
 
+class StreamDeckAction(MacroAbstractAction):
+    """Stream Deck page control as a macro step (same functions as Map to Stream Deck)."""
+
+    def __init__(self):
+        super().__init__()
+        self.device_id = ""
+        self.command = "changePage"
+        self.page = 0  # 0-based GEX bank
+        self.auto_return = False
+        self.auto_return_seconds = 5.0
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["device_id"] = self.device_id
+        state["command"] = self.command
+        state["page"] = self.page
+        state["auto_return"] = self.auto_return
+        state["auto_return_seconds"] = self.auto_return_seconds
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.device_id = state.get("device_id", "") or ""
+        self.command = state.get("command", "changePage") or "changePage"
+        try:
+            self.page = max(0, int(state.get("page", 0)))
+        except (TypeError, ValueError):
+            self.page = 0
+        self.auto_return = bool(state.get("auto_return", False))
+        try:
+            self.auto_return_seconds = max(0.1, float(state.get("auto_return_seconds", 5.0)))
+        except (TypeError, ValueError):
+            self.auto_return_seconds = 5.0
+
+    def __call__(
+        self,
+        is_local=True,
+        is_remote=False,
+        force_remote=False,
+        client_list: list = None,
+    ):
+        from action_plugins.map_to_streamdeck import (
+            FUNCTIONS,
+            apply_page_command,
+            resolve_profile_for_device,
+        )
+        import gremlin.ui.streamdeck_device
+
+        bridge = gremlin.ui.streamdeck_device.StreamDeckBridge()
+        if not bridge.started:
+            bridge.start()
+
+        device_id = self.device_id or ""
+        devices = bridge.devices
+        if device_id and device_id not in devices:
+            syslog.warning(
+                f"MACRO: Stream Deck device [{device_id[:12]}] is not connected"
+            )
+            device_id = ""
+        if not device_id:
+            if len(devices) == 1:
+                device_id = next(iter(devices.keys()))
+            elif not devices:
+                syslog.warning("MACRO: Stream Deck — no deck connected")
+                return
+            else:
+                syslog.warning(
+                    "MACRO: Stream Deck — no device selected and multiple decks connected"
+                )
+                return
+
+        cmd = self.command or "changePage"
+        page = 0 if self.page is None else max(0, int(self.page))
+        label = dict(FUNCTIONS).get(cmd, cmd)
+        verbose = gremlin.config.Configuration().verbose_mode_macro
+        if verbose:
+            syslog.info(
+                f"MACRO: Stream Deck {label} device={device_id[:12]} page0={page}"
+                + (f" auto-return={self.auto_return_seconds:g}s" if self.auto_return else "")
+            )
+
+        profile = resolve_profile_for_device(device_id, page)
+        apply_page_command(
+            device_id,
+            cmd,
+            page,
+            auto_return=bool(self.auto_return),
+            auto_return_seconds=float(self.auto_return_seconds or 5.0),
+            profile=profile,
+        )
+
+
 class AbstractRepeat:
     """Base class for all macro repeat modes."""
 
