@@ -330,6 +330,12 @@ def ensure_streamdeck_special_device(device_id: str, name: str = None, device_ty
         return None
     guid = streamdeck_guid_for_device(device_id)
     label = friendly_streamdeck_name(name, device_type, device_id)
+    # Profile XML / empty plugin updates often call this with only a device_id.
+    # Never replace a good tab name ("Stream Deck XL") with "Stream Deck (b1772166)".
+    existing = gremlin.joystick_handling.getDevice(guid)
+    if existing is not None and existing.name:
+        if _is_weak_streamdeck_name(label, device_id) and not _is_weak_streamdeck_name(existing.name, device_id):
+            label = existing.name
     device = dinput.DeviceSummary()
     device.name = label
     device.device_guid = guid
@@ -1305,6 +1311,9 @@ class StreamDeckBridge(QtCore.QObject):
 
     def _load_page_metadata(self, *_args, emit: bool = True):
         """Restore GEX virtual page names/order from the profile sidecar JSON."""
+        # Always replace — stale names from a previously loaded profile must not linger.
+        self._page_names = {}
+        self._page_order = {}
         profile = gremlin.shared_state.current_profile
         data = {}
         try:
@@ -1330,7 +1339,7 @@ class StreamDeckBridge(QtCore.QObject):
             syslog.warning(f"STREAMDECK: page metadata load failed: {err}")
             data = {}
         if not isinstance(data, dict):
-            return
+            data = {}
         for device_id, meta in data.items():
             if not device_id or not isinstance(meta, dict):
                 continue
@@ -1354,36 +1363,80 @@ class StreamDeckBridge(QtCore.QObject):
                         continue
             if name_map:
                 self._page_names[device_id] = name_map
-        # Reconnect only: if a single orphaned metadata blob exists and exactly one
-        # live deck has no metadata yet, adopt it. Never copy between two live decks.
+        # Reconnect: bind orphaned sidecar blobs to live decks that lack metadata.
         try:
             live_ids = list(self._devices.keys())
         except Exception:
             live_ids = []
-        if len(live_ids) == 1:
-            live_id = live_ids[0]
-            if live_id and live_id not in self._page_names:
-                orphans = [
-                    sid for sid in self._page_names.keys()
-                    if sid and sid not in live_ids
-                ]
-                if len(orphans) == 1:
-                    orphan_id = orphans[0]
-                    self._page_names[live_id] = dict(self._page_names.get(orphan_id) or {})
-                    if orphan_id in self._page_order:
-                        self._page_order[live_id] = list(self._page_order[orphan_id])
-                    syslog.info(
-                        f"STREAMDECK: adopted page metadata {orphan_id[:12]}… → {live_id[:12]}…"
-                    )
+        self._adopt_orphan_page_metadata(live_ids)
         # Repair accidental cross-device copies (identical name maps on two live decks).
         self._dedupe_live_page_metadata(live_ids)
         if not emit:
             return
-        for device_id in list(self._page_names.keys()):
+        # profile_loaded is psygnal (may fire on the worker) — refresh designers on UI thread.
+        gremlin.util.InvokeUiMethod(self._emit_page_metadata_changed)
+
+    def _emit_page_metadata_changed(self):
+        for device_id in list(self._page_names.keys()) + list(self._devices.keys()):
+            if not device_id:
+                continue
             try:
                 self.virtual_page_changed.emit(device_id, self.get_active_page(device_id))
             except Exception:
                 pass
+
+    def _adopt_orphan_page_metadata(self, live_ids: list[str] | None = None):
+        """Attach sidecar page names to live decks when Elgato ids drifted or plugin was late."""
+        try:
+            all_live = list(self._devices.keys())
+        except Exception:
+            all_live = []
+        # Orphans = sidecar keys that are not any currently connected deck.
+        orphans = [sid for sid in self._page_names.keys() if sid and sid not in all_live]
+        if not orphans:
+            return
+        targets = list(live_ids) if live_ids is not None else list(all_live)
+        if not targets:
+            return
+
+        def _custom_score(device_id: str) -> tuple[int, int]:
+            names = self._page_names.get(device_id) or {}
+            order = self._page_order.get(device_id) or []
+            custom = sum(
+                1
+                for page, label in names.items()
+                if label and label != f"Page {page}"
+            )
+            return (custom, max(len(names), len(order)))
+
+        for live_id in targets:
+            if not live_id or live_id in self._page_names:
+                continue
+            # Prefer an orphan that already matches this deck's profile input pages.
+            input_pages = {item.page for item in self._iter_device_inputs(live_id)}
+            best = None
+            best_score = (-1, -1, -1)
+            for orphan_id in orphans:
+                names = self._page_names.get(orphan_id) or {}
+                order = set(self._page_order.get(orphan_id) or [])
+                overlap = len(input_pages.intersection(set(names.keys()) | order)) if input_pages else 0
+                custom, richness = _custom_score(orphan_id)
+                score = (overlap, custom, richness)
+                if score > best_score:
+                    best_score = score
+                    best = orphan_id
+            if best is None:
+                continue
+            # Require either page overlap with profile inputs, or a uniquely rich orphan.
+            if best_score[0] <= 0 and not (len(orphans) == 1 and best_score[1] > 0):
+                if len(all_live) != 1 or len(orphans) != 1:
+                    continue
+            self._page_names[live_id] = dict(self._page_names.get(best) or {})
+            if best in self._page_order:
+                self._page_order[live_id] = list(self._page_order[best])
+            syslog.info(
+                f"STREAMDECK: adopted page metadata {best[:12]}… → {live_id[:12]}…"
+            )
 
     def _dedupe_live_page_metadata(self, live_ids: list[str] | None = None):
         """Keep page banks per device: undo shared copies between connected decks."""
@@ -2112,6 +2165,21 @@ class StreamDeckBridge(QtCore.QObject):
         for device_id, info in self._devices.items():
             if compare_guid(info.get("guid"), device_guid):
                 return device_id
+        # Plugin may not be connected yet — reverse uuid5 from known sidecar / profile ids.
+        candidates = set(list(self._page_names.keys()) + list(self._page_order.keys()))
+        try:
+            profile = gremlin.shared_state.current_profile
+            mode = gremlin.shared_state.edit_mode or gremlin.shared_state.current_mode
+            if profile is not None and mode:
+                for item in profile.registry.getInputItems(device_guid, mode, InputType.StreamDeck) or []:
+                    did = getattr(item, "device_id", None) or getattr(item, "_elgato_device_id", None)
+                    if did:
+                        candidates.add(str(did))
+        except Exception:
+            pass
+        for device_id in candidates:
+            if device_id and compare_guid(streamdeck_guid_for_device(device_id), device_guid):
+                return device_id
         return ""
 
     def _request_tab_refresh(self):
@@ -2140,12 +2208,17 @@ class StreamDeckBridge(QtCore.QObject):
             device_id,
         )
         if action in ("connected", "update"):
+            # Keep a strong previous label if this update only has a weak id fallback.
+            if previous and _is_weak_streamdeck_name(name, device_id) and not _is_weak_streamdeck_name(
+                previous.get("name") or "", device_id
+            ):
+                name = previous.get("name")
             guid = streamdeck_guid_for_device(device_id)
             ensure_streamdeck_special_device(device_id, name, raw_type)
             self._devices[device_id] = {
                 "device_id": device_id,
                 "name": name,
-                "type": raw_type if raw_type is not None else "",
+                "type": raw_type if raw_type is not None else (previous.get("type") if previous else ""),
                 "guid": guid,
             }
             self.devices_changed.emit()
@@ -2154,9 +2227,16 @@ class StreamDeckBridge(QtCore.QObject):
                 self._migrate_legacy_inputs_for_device(device_id)
                 self._request_tab_refresh()
             try:
+                self._adopt_orphan_page_metadata([device_id] if device_id else None)
                 self._dedupe_live_page_metadata()
             except Exception:
                 pass
+            # First connect often arrives after profile_loaded — refresh page names now.
+            if previous is None:
+                try:
+                    gremlin.util.InvokeUiMethod(self._emit_page_metadata_changed)
+                except Exception:
+                    pass
             if gremlin.config.Configuration().verbose_mode_streamdeck:
                 syslog.info(f"STREAMDECK: device {name} ({device_id})")
         elif action == "disconnected":
@@ -3150,6 +3230,18 @@ class StreamDeckDeviceTabWidget(gremlin.input_item.BaseDeviceTabWidget):
 
     def _on_plugin_connected(self, connected: bool):
         self._refresh_status_label()
+        if not connected:
+            return
+        # Resolve Elgato id now that the plugin is up (tab may have been built earlier).
+        if not self._is_legacy_tab:
+            resolved = StreamDeckBridge().device_id_for_guid(self.device_guid)
+            if resolved:
+                self._elgato_device_id = resolved
+        try:
+            StreamDeckBridge()._adopt_orphan_page_metadata()
+        except Exception:
+            pass
+        gremlin.util.InvokeUiMethod(self.ensureInputItems, True)
 
     def _on_status_message(self, message: str):
         if Shiboken.isValid(self._status_label):

@@ -1815,6 +1815,10 @@ class StreamDeckDesignerWidget(QtWidgets.QWidget):
         try:
             if self._device_id and not (bridge._page_names.get(self._device_id) or {}):
                 bridge._load_page_metadata(emit=False)
+                # Sidecar may key names under a prior Elgato id — bind to this deck.
+                bridge._adopt_orphan_page_metadata(
+                    [self._device_id] if self._device_id else None
+                )
         except Exception:
             pass
         pages = bridge.list_pages(self._device_id) if self._device_id else [1]
