@@ -13,6 +13,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import gremlin.event_handler
 import gremlin.ui.ui_common
+import gremlin.util
 from gremlin.ui.ui_common import Color, QTabHeader
 
 from .inspector import OverlayInspector
@@ -832,6 +833,10 @@ class OverlayDesignerWidget(QtWidgets.QWidget):
         return row
 
     def _on_scene_ui(self):
+        app = QtWidgets.QApplication.instance()
+        if app is not None and QtCore.QThread.currentThread() is not app.thread():
+            gremlin.util.InvokeUiMethod(self._on_scene_ui)
+            return
         self._refresh_page_tabs()
         self._refresh_interactive_box()
         self._refresh_overlay_button()
@@ -1112,6 +1117,10 @@ class OverlayDesignerWidget(QtWidgets.QWidget):
         button.setText("Hide overlay" if visible else "Show overlay")
 
     def refresh_profile_title(self):
+        app = QtWidgets.QApplication.instance()
+        if app is not None and QtCore.QThread.currentThread() is not app.thread():
+            gremlin.util.InvokeUiMethod(self.refresh_profile_title)
+            return
         self._title.setText(f"Overlay — {profile_display_name()}")
         self._refresh_overlay_button()
 

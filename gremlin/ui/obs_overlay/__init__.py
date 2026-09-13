@@ -85,24 +85,37 @@ class OverlayManager:
         self._refresh_page_chrome()
 
     def _on_profile_loaded(self):
+        # profile_loaded is a psygnal Signal and may fire on the profile-load
+        # worker thread — never touch Qt widgets / scene emits from there.
+        gremlin.util.InvokeUiMethod(self._on_profile_loaded_ui)
+
+    def _on_profile_loaded_ui(self):
         if self.scene.dirty:
             self.scene.save_owned()
         self._load_current_profile_scene()
 
     def _on_profile_unloaded(self):
+        # Same as loaded: unload runs on WorkManager; inspector rebuild must
+        # stay on the UI thread or GEX hangs (Not Responding).
+        gremlin.util.InvokeUiMethod(self._on_profile_unloaded_ui)
+
+    def _on_profile_unloaded_ui(self):
         if self.scene.dirty:
             self.scene.save_owned()
-        gremlin.util.InvokeUiMethod(self._stop_runtime_toggle)
+        self._stop_runtime_toggle()
         self.hide_overlay()
         # New Profile never emits profile_loaded; drop the previous layout now
         # so the designer does not keep showing it on the empty profile.
         self._load_current_profile_scene()
 
     def _on_tabs_loaded(self):
-        self._ensure_current_profile_scene()
+        gremlin.util.InvokeUiMethod(self._ensure_current_profile_scene)
 
     def _on_profile_started(self):
-        gremlin.util.InvokeUiMethod(self._start_runtime_toggle)
+        gremlin.util.InvokeUiMethod(self._on_profile_started_ui)
+
+    def _on_profile_started_ui(self):
+        self._start_runtime_toggle()
         auto_ids = [
             page["id"]
             for page in self.scene.pages
@@ -113,8 +126,11 @@ class OverlayManager:
             QtCore.QTimer.singleShot(0, lambda ids=auto_ids: self.show_overlay(auto=True, page_ids=ids))
 
     def _on_profile_stop(self):
-        gremlin.util.InvokeUiMethod(self._release_overlay_touch)
-        gremlin.util.InvokeUiMethod(self._stop_runtime_toggle)
+        gremlin.util.InvokeUiMethod(self._on_profile_stop_ui)
+
+    def _on_profile_stop_ui(self):
+        self._release_overlay_touch()
+        self._stop_runtime_toggle()
         auto = self._auto_shown or any(
             page.get("canvas", {}).get("show_on_profile_start") for page in self.scene.pages
         )

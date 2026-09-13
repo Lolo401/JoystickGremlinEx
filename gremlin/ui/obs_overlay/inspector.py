@@ -17,6 +17,7 @@ from shiboken6 import Shiboken
 import gremlin.joystick_handling
 import gremlin.types
 import gremlin.ui.ui_common
+import gremlin.util
 from gremlin.input_types import InputType
 
 from .bindings import widget_needs_xy
@@ -311,6 +312,11 @@ class OverlayInspector(QtWidgets.QWidget):
 
     def rebuild(self):
         if not self._is_alive():
+            return
+        app = QtWidgets.QApplication.instance()
+        if app is not None and QtCore.QThread.currentThread() is not app.thread():
+            # Scene signals are psygnal (same-thread); bounce off worker threads.
+            gremlin.util.InvokeUiMethod(self.rebuild)
             return
         if self._building:
             self._rebuild_pending = True
