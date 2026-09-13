@@ -49,10 +49,13 @@ The test versions are available here: https://github.com/muchimi/JoystickGremlin
 # Change log
 
 ### (m77T50)
-- Fix: Macro API: for the older macro run model, revisited start/stop logic of the macro scheduler and removed daemon status which would cause shutdown/restart logic errors.  This does not impact the new faster macro run model.
+- New: OBS Overlay: (experimental) Module courtesy Lolo350. This module allows to configure an overlay module with chroma-key support suitable for streaming. Many thanks to Lolo350 for including this feature in GEX.
+- New: API Voice: (experimental) API level support for voice input/speech commands.  This module while not yet in production in T50 includes back-end services for speech recognition. This will follow in the coming days with a voice input device to use natural speech as an input device.
+ Fix: Macro API: for the older macro run model, revisited start/stop logic of the macro scheduler and removed daemon status which would cause shutdown/restart logic errors.  This does not impact the new faster macro run model.
 - Fix: PlaySound Action: persist suppress duplication options
-- Experimental: voice input device [not enabled in production].  This device does speech recognition to trigger based on voice commands and will show up as a new special device type.  It's not in production right now as this is in the very early stages of testing/implementation but is completely functional at the API level.  More on this later.
 
+
+- Fix: Streamdeck support: Adapted to T50 release courtesy Lolo350
 
 
 ### (m77T49)

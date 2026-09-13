@@ -3850,7 +3850,7 @@ class EventHandler(QtCore.QObject):
         import gremlin.execution_graph
 
         callback_list = []
-                if event.event_type == InputType.State:
+        if event.event_type == InputType.State:
             key = event.identifier.message_key
             if event.device_guid in self.state_callbacks:
                 device_cbs = self.state_callbacks[event.device_guid]

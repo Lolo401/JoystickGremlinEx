@@ -2149,12 +2149,9 @@ Note that firewall rules must allow traffic on the selected IP addresses/ports f
         install_row.setContentsMargins(8, 0, 0, 0)
         install_layout = QtWidgets.QHBoxLayout(install_row)
         install_layout.setContentsMargins(0, 0, 0, 0)
-        self.streamdeck_install_plugin_btn = gremlin.ui.ui_common.QDataPushButton(
-            "Install Stream Deck plugin…"
-        )
+        self.streamdeck_install_plugin_btn = gremlin.ui.ui_common.QDataPushButton("Install Stream Deck plugin…")
         self.streamdeck_install_plugin_btn.setToolTip(
-            "Copy the JG Ex plugin into Elgato Stream Deck’s Plugins folder. "
-            "Quit Stream Deck software first, then relaunch it after install."
+            "Copy the JG Ex plugin into Elgato Stream Deck’s Plugins folder. Quit Stream Deck software first, then relaunch it after install."
         )
         self.streamdeck_install_plugin_btn.clicked.connect(self._streamdeck_install_plugin)
         install_layout.addWidget(self.streamdeck_install_plugin_btn)
@@ -2644,9 +2641,7 @@ Note that firewall rules must allow traffic on the selected IP addresses/ports f
         confirm = QtWidgets.QMessageBox.question(
             self,
             "Install Stream Deck plugin",
-            "Quit Stream Deck software before installing, then relaunch it afterward.\n\n"
-            f"Install the JG Ex plugin into:\n{dest}\n\n"
-            "Continue?",
+            f"Quit Stream Deck software before installing, then relaunch it afterward.\n\nInstall the JG Ex plugin into:\n{dest}\n\nContinue?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.Yes,
         )
@@ -4868,7 +4863,8 @@ class DeviceDisplayDialog(gremlin.ui.ui_common.QRememberDialog):
             item.setData(QtCore.Qt.UserRole, (device, visible))
             item.setSizeHint(widget.sizeHint())
             widget.setListWidget(item)
-            enabled = device.device_type not in (DeviceType.Plugins, DeviceType.Settings, DeviceType.Overlay)
+            # the only two devices that cannot be disabled are Plugins and Settings - the two system devices  - all others can be disabled by the user if they so wish
+            enabled = device.device_type not in (DeviceType.Plugins, DeviceType.Settings)
             widget.setVisibleEnabled(enabled)
             self._list_widget.setItemWidget(item, widget)
 
