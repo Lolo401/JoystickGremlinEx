@@ -607,6 +607,11 @@ def set_button(device_guid: str | dinput.GUID | int, index: int, is_pressed: boo
 
     # local input
     vjoy_id = device.vjoy_id
+    if not (isinstance(vjoy_id, int) and 1 <= vjoy_id <= 16):
+        syslog.warning(
+            f"VJOY SET BUTTON: device [{device.name}] has invalid vjoy_id [{vjoy_id}] — skipping"
+        )
+        return
     if 0 < index <= device.button_count:
         proxy = gremlin.joystick_handling.VJoyProxy()
         proxy[vjoy_id].button(index).is_pressed = is_pressed
@@ -644,6 +649,11 @@ def set_axis(device_guid, index: int, value: float, update_remote: bool = False)
         return
 
     vjoy_id = device.vjoy_id
+    if not (isinstance(vjoy_id, int) and 1 <= vjoy_id <= 16):
+        syslog.warning(
+            f"VJOY SET AXIS: device [{device.name}] has invalid vjoy_id [{vjoy_id}] — skipping"
+        )
+        return
     if 0 < index <= device.axis_count:
         proxy = gremlin.joystick_handling.VJoyProxy()
         proxy[vjoy_id].axis(index).value = value
@@ -668,6 +678,11 @@ def set_hat(device_guid: str | dinput.GUID | int, index: int, direction: tuple):
     if not device.connected or not device.is_virtual:
         return
     vjoy_id = device.vjoy_id
+    if not (isinstance(vjoy_id, int) and 1 <= vjoy_id <= 16):
+        syslog.warning(
+            f"VJOY SET HAT: device [{device.name}] has invalid vjoy_id [{vjoy_id}] — skipping"
+        )
+        return
     if 0 < index < device.hat_count:
         proxy = gremlin.joystick_handling.VJoyProxy()
         proxy[vjoy_id].hat(index).direction = direction
@@ -1777,7 +1792,13 @@ def _update_joystick_device_maps():
         _all_joystick_devices.sort(key=lambda x: x.name.casefold())
 
         _joystick_devices = [dev for dev in _all_joystick_devices if dev.enabled]  # all connected joystick devices
-        _vjoy_devices_map = {dev.vjoy_id: dev for dev in _all_devices_map.values() if dev.device_type == DeviceType.VJoy}
+        # Only index properly matched VJOY ids (1..16). Unmatched DINPUT stubs stay
+        # at vjoy_id=-1 and must not enter the runtime map (profile start would crash).
+        _vjoy_devices_map = {
+            dev.vjoy_id: dev
+            for dev in _all_devices_map.values()
+            if dev.device_type == DeviceType.VJoy and isinstance(dev.vjoy_id, int) and 1 <= dev.vjoy_id <= 16
+        }
         _vjoy_devices = [dev for dev in _vjoy_devices_map.values()]
         _vjoy_devices.sort(key=lambda x: x.vjoy_id)
         _disconnected_devices_map = {dev.device_guid: dev for dev in _all_devices_map.values() if not dev.connected}
@@ -2227,7 +2248,10 @@ class VirtualDeviceUsageState:
     def _set_usage_state(self, device_type: DeviceType, virtual_id: int, button_id: int, key, used: bool, emit=True):
         """sets the usage state for a virtual button"""
 
-        assert key in self._action_map, "action not registered"
+        # Paste / GUID regen can briefly leave an action unregistered; auto-heal
+        # instead of asserting so the mapping UI can finish building.
+        if key not in self._action_map:
+            self.registerAction(key)
 
         current_state = self._get_usage_state(device_type, virtual_id, button_id)
 
@@ -2299,10 +2323,22 @@ class VirtualDeviceUsageState:
 
     def set_usage_state(self, device_guid, button_id: int, key, used: bool, emit=True):
         """sets the usage state for a virtual button"""
-        assert isinstance(device_guid, dinput.GUID), "invalid device GUID"
+        if device_guid is None or not isinstance(device_guid, dinput.GUID):
+            return
+        self.ensure_device_maps()
         device = gremlin.joystick_handling.getDevice(device_guid)
-        assert device is not None, "invalid device GUID"
-        assert device.is_virtual, "device is not virtual"
+        if device is None:
+            # Profile reload can race joystick re-init; skip rather than abort the load.
+            syslog.warning(
+                f"VJOY usage: device not found for GUID [{device_guid}] "
+                f"(button {button_id}) — skipping usage update"
+            )
+            return
+        if not device.is_virtual:
+            syslog.warning(
+                f"VJOY usage: device [{device.name}] is not virtual — skipping usage update"
+            )
+            return
         device_type = device.device_type
         virtual_id = device.virtual_id
         self._set_usage_state(device_type, virtual_id, button_id, key, used, emit)

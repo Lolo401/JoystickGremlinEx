@@ -5724,7 +5724,11 @@ class AbstractAction(BaseProfileData):
         _import_data = gremlin.base_profile.ProfileImportData()
 
         if "action_id" in node.attrib:
-            self.id = node.get("action_id")
+            # Paste/import clones keep the ctor GUID until generateGuids().
+            # Adopting the source action_id would unregister the live source
+            # when GUIDs are regenerated (shared key in VirtualDeviceUsageState).
+            if not (extra_data and extra_data.get("paste")):
+                self.id = node.get("action_id")
 
         if "send-mode" in node.attrib:
             mode_int = safe_read(node, "send-mode", int, 0)
