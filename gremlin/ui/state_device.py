@@ -1532,7 +1532,10 @@ class StateData:
         state = StateInputItem(key, value, description)
         self._data[key] = state
         self._id_map[state.id] = state
-        self.crud.emit()
+        # Skip UI refresh during profile XML load — MacroWidgets still listen
+        # to crud and would rebuild VJoy dropdowns on the worker thread.
+        if not gremlin.shared_state.profile_loading:
+            self.crud.emit()
         return state
 
     def update_key(self, state, old_name, new_name):
@@ -1544,7 +1547,8 @@ class StateData:
         # remove the old state AFTER updates or things referencing the old state won't find it
         if old_name in self._data:
             del self._data[old_name]
-        self.crud.emit()
+        if not gremlin.shared_state.profile_loading:
+            self.crud.emit()
 
     def _expression_changed(self, state):
         self.expression_changed.emit(state)
@@ -1586,7 +1590,7 @@ class StateData:
             self._data[data.key] = data
             self._id_map[data.id] = data
             self._sort()
-            if emit:
+            if emit and not gremlin.shared_state.profile_loading:
                 self.crud.emit()
 
     def _sort(self):
@@ -1769,7 +1773,8 @@ class StateData:
         if self._data:
             self._data.clear()
             self._id_map.clear()
-            self.crud.emit()
+            if not gremlin.shared_state.profile_loading:
+                self.crud.emit()
 
     def remove(self, state: StateInputItem | str):
 
@@ -1782,7 +1787,8 @@ class StateData:
             data.unhook()
             del self._data[key]
             del self._id_map[data.id]
-            self.crud.emit()
+            if not gremlin.shared_state.profile_loading:
+                self.crud.emit()
 
     def removeId(self, id: str):
         if id in self._id_map:
