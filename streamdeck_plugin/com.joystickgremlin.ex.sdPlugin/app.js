@@ -6,6 +6,11 @@
 const ACTION_BUTTON = "com.joystickgremlin.ex.button";
 const ACTION_DIAL = "com.joystickgremlin.ex.dial";
 
+// Solid black key — used instead of "" so Stream Deck does not restore the
+// default blue JG Ex Button artwork on unassigned / cleared slots.
+const EMPTY_KEY_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAIAAADajyQQAAAAJklEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAL4MPQgAAXnT8VwAAAAASUVORK5CYII=";
+
 let websocket = null;
 let pluginUUID = null;
 let gexSocket = null;
@@ -169,6 +174,12 @@ function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, in
             prev.column = payload.coordinates.column;
           }
           instances[context] = prev;
+          // After GEX paints the dial LCD canvas, Elgato title overlays ("JG Ex Dial")
+          // must stay suppressed — re-clear if Stream Deck pushes the action name back.
+          if (isDialContext(context) && prev.lcdPainted) {
+            suppressDialTitleOverlay(context);
+            prev.elgatoTitle = "";
+          }
           pushInstanceToGex(context);
           logToElgato("JGEx titleParameters title=" + displayTitle(prev) + " buttonId=" + prev.buttonId);
         }
@@ -360,9 +371,138 @@ function logToElgato(message) {
   } catch (e) { /* ignore */ }
 }
 
-/** deviceId -> current virtual page (0-based) */
+/** deviceId -> current virtual page (0-based GEX bank) */
 const devicePage = {};
 
+/**
+ * Apply titles/images from a GEX paintPage payload (Companion-style banks).
+ * keys: [{ context, buttonId, title, image, row, column }, ...]
+ *
+ * Buttons use setTitle/setImage. Dials use setFeedback on layout $A0
+ * (full-canvas) so the touch-strip LCD updates — setImage only changes the
+ * dial's profile "key" icon under the strip, not the LCD.
+ */
+function paintKeysFromGex(deviceId, pageIndex, keys) {
+  if (deviceId != null && deviceId !== "") {
+    devicePage[deviceId] = pageIndex;
+  }
+  let updated = 0;
+  const list = Array.isArray(keys) ? keys : [];
+  list.forEach(function (entry) {
+    if (!entry) return;
+    let context = entry.context;
+    if (!context && deviceId && entry.buttonId != null) {
+      context = findContextByButton(deviceId, entry.buttonId);
+    }
+    if (!context && deviceId != null && entry.row != null && entry.column != null) {
+      context = findContextByCoords(deviceId, entry.row, entry.column);
+    }
+    if (!context || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+    const title = (entry.title != null) ? String(entry.title) : "";
+    if (isDialContext(context)) {
+      // Title is baked into the composite LCD image.
+      applyDialLcdFeedback(context, Object.prototype.hasOwnProperty.call(entry, "image") ? (entry.image || "") : null);
+    } else {
+      websocket.send(JSON.stringify({
+        event: "setTitle",
+        context: context,
+        payload: { title: title, target: 0 }
+      }));
+      if (Object.prototype.hasOwnProperty.call(entry, "image")) {
+        websocket.send(JSON.stringify({
+          event: "setImage",
+          context: context,
+          payload: { image: entry.image || EMPTY_KEY_IMAGE, target: 0, state: 0 }
+        }));
+      }
+    }
+    if (instances[context]) {
+      instances[context].elgatoTitle = title;
+      instances[context].elgatoTitleUpdated = Date.now();
+    }
+    updated += 1;
+  });
+  // Do not call showOk here — it flashes a giant green check on a key after every
+  // paintPage (including idle restore after each press), which looks like a bug.
+  logToElgato("JGEx paintPage page=" + (pageIndex + 1) + " device=" + (deviceId || "?") + " keys=" + updated);
+  return updated;
+}
+
+function isDialContext(context) {
+  const inst = instances[context];
+  if (!inst) return false;
+  if (inst.kind === "dial" || inst.kind === "dial_press") return true;
+  if (inst.action === ACTION_DIAL) return true;
+  return false;
+}
+
+function suppressDialTitleOverlay(context) {
+  if (!context || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+  websocket.send(JSON.stringify({
+    event: "setTitle",
+    context: context,
+    payload: { title: "", target: 0 }
+  }));
+  websocket.send(JSON.stringify({
+    event: "setFeedback",
+    context: context,
+    payload: { title: { value: "", enabled: false } }
+  }));
+}
+
+/**
+ * Push a 200×100 (or data-URL) image onto the Stream Deck + dial LCD via $A0.
+ * @param {string} context
+ * @param {string|null} image data-URL or "" to clear; null = leave canvas unchanged
+ */
+function applyDialLcdFeedback(context, image) {
+  if (!context || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+  // Ensure full-canvas layout (manifest default is $A0; re-assert after profile edits).
+  websocket.send(JSON.stringify({
+    event: "setFeedbackLayout",
+    context: context,
+    payload: { layout: "$A0" }
+  }));
+  if (image === null || image === undefined) {
+    return;
+  }
+  // Hide the layout title ("JG Ex Dial" / user title). GEX bakes text into the canvas.
+  // `enabled: false` removes the title item; empty value alone is not enough when the
+  // Stream Deck profile still has a title string.
+  const payload = {
+    title: { value: "", enabled: false },
+    "full-canvas": { value: image || "" }
+  };
+  websocket.send(JSON.stringify({
+    event: "setFeedback",
+    context: context,
+    payload: payload
+  }));
+  suppressDialTitleOverlay(context);
+  if (instances[context]) {
+    instances[context].elgatoTitle = "";
+    instances[context].elgatoTitleUpdated = Date.now();
+    instances[context].lcdPainted = true;
+  }
+  logToElgato("JGEx dial LCD setFeedback context=" + context + " chars=" + String(image || "").length + (image ? "" : " (clear)"));
+}
+
+function findContextByCoords(deviceId, row, column) {
+  const r = parseInt(row, 10);
+  const c = parseInt(column, 10);
+  if (isNaN(r) || isNaN(c)) return null;
+  const keys = Object.keys(instances);
+  for (let i = 0; i < keys.length; i++) {
+    const ctx = keys[i];
+    const inst = instances[ctx];
+    if (!inst) continue;
+    if (deviceId && inst.deviceId && inst.deviceId !== deviceId) continue;
+    if (inst.row === r && inst.column === c) return ctx;
+  }
+  return null;
+}
+
+/** Legacy fallback: prefix P# when GEX sends changePage without key payloads. */
 function applyVirtualPage(deviceId, page) {
   const pageNum = parseInt(page, 10);
   const pageIndex = isNaN(pageNum) ? 0 : Math.max(0, pageNum);
@@ -383,9 +523,6 @@ function applyVirtualPage(deviceId, page) {
       context: ctx,
       payload: { title: title, target: 0 }
     }));
-    if (updated === 0) {
-      websocket.send(JSON.stringify({ event: "showOk", context: ctx }));
-    }
     updated += 1;
   });
   logToElgato("JGEx virtual page=" + (pageIndex + 1) + " device=" + (deviceId || "?") + " keys=" + updated);
@@ -563,6 +700,19 @@ function handleWillAppear(context, action, device, payload) {
     deviceType: (remembered.type !== undefined && remembered.type !== null) ? remembered.type : ""
   });
   pushInstanceToGex(context);
+  // Start blank (black) until GEX paints — avoid flashing the blue default icon.
+  if (kind === "button" && websocket && websocket.readyState === WebSocket.OPEN) {
+    websocket.send(JSON.stringify({
+      event: "setImage",
+      context: context,
+      payload: { image: EMPTY_KEY_IMAGE, target: 0, state: 0 }
+    }));
+    websocket.send(JSON.stringify({
+      event: "setTitle",
+      context: context,
+      payload: { title: "", target: 0 }
+    }));
+  }
   sendToPropertyInspector(context, action, {
     event: "connectionStatus",
     connected: gexConnected,
@@ -710,9 +860,21 @@ function handleGexMessage(data) {
   if (!context && deviceId && buttonId != null) {
     context = findContextByButton(deviceId, buttonId);
   }
+  if (!context && deviceId != null && data.row != null && data.column != null) {
+    context = findContextByCoords(deviceId, data.row, data.column);
+  }
 
-  logToElgato("JGEx GEX command=" + command + " raw=" + JSON.stringify(data));
-  if (command !== "changePage" && command !== "switchToProfile" && command !== "syncInputs" && command !== "refresh") {
+  // Never JSON.stringify full paint/image payloads (base64 icons can hang/abort the handler).
+  if (command === "paintPage") {
+    const keys = Array.isArray(data.keys) ? data.keys : [];
+    logToElgato("JGEx GEX command=paintPage keys=" + keys.length + " page=" + data.page);
+  } else if (command === "setImage") {
+    const img = data.image || "";
+    logToElgato("JGEx GEX command=setImage context=" + (context || "?") + " imageChars=" + img.length);
+  } else {
+    logToElgato("JGEx GEX command=" + command + " raw=" + JSON.stringify(data));
+  }
+  if (command !== "changePage" && command !== "switchToProfile" && command !== "syncInputs" && command !== "refresh" && command !== "paintPage") {
     sendToGex({ type: "command_ack", command: command, ok: true });
   }
 
@@ -729,20 +891,35 @@ function handleGexMessage(data) {
         context: context,
         payload: { title: data.title || "", target: 0 }
       }));
-      // Keep our cache / GEX list in sync with what we just set.
+      // Update cache only — do not pushInstanceToGex (avoids paint feedback loop
+      // that restores released appearance while a key is still held).
       if (instances[context]) {
         instances[context].elgatoTitle = data.title || "";
         instances[context].elgatoTitleUpdated = Date.now();
-        pushInstanceToGex(context);
       }
       break;
     case "setImage":
-      if (!context) return;
+      if (!context) {
+        logToElgato("JGEx setImage skipped: no context");
+        return;
+      }
+      // Empty / clear → solid black (not the blue default action icon).
+      const img = (data.clear || !data.image) ? EMPTY_KEY_IMAGE : data.image;
+      if (isDialContext(context) || data.target === "lcd" || data.feedback) {
+        // Dial LCD lives on the touch strip — setFeedback ($A0 full-canvas), not setImage.
+        applyDialLcdFeedback(context, img);
+        break;
+      }
       websocket.send(JSON.stringify({
         event: "setImage",
         context: context,
-        payload: { image: data.image || "", target: 0 }
+        payload: { image: img, target: 0, state: 0 }
       }));
+      logToElgato("JGEx setImage applied context=" + context + " chars=" + String(img).length + (img === EMPTY_KEY_IMAGE ? " (empty)" : ""));
+      break;
+    case "setFeedback":
+      if (!context) return;
+      applyDialLcdFeedback(context, (data.clear || !data.image) ? "" : (data.image || ""));
       break;
     case "setState":
       if (!context) return;
@@ -760,13 +937,30 @@ function handleGexMessage(data) {
       if (!context) return;
       websocket.send(JSON.stringify({ event: "showAlert", context: context }));
       break;
+    case "paintPage": {
+      const device = resolveDeviceId(deviceId);
+      const pageNum = parseInt(data.page, 10);
+      const pageIndex = isNaN(pageNum) ? 0 : Math.max(0, pageNum);
+      const n = paintKeysFromGex(device, pageIndex, data.keys || []);
+      sendToGex({ type: "command_ack", command: command, ok: true, keys: n, page: pageIndex });
+      break;
+    }
     case "changePage":
     case "switchToProfile": {
-      // One profile (e.g. profiles/jgex-xl); page is the 0-based page index.
+      // Prefer GEX-supplied key paint (Companion banks). Fallback: P# title prefix only.
       const device = resolveDeviceId(deviceId);
-      const n = applyVirtualPage(device, data.page);
-      const profile = data.profile || "profiles/jgex-xl";
-      sendSwitchToProfile(device, profile, data.page);
+      const pageNum = parseInt(data.page, 10);
+      const pageIndex = isNaN(pageNum) ? 0 : Math.max(0, pageNum);
+      let n = 0;
+      if (data.keys && data.keys.length) {
+        n = paintKeysFromGex(device, pageIndex, data.keys);
+      } else {
+        n = applyVirtualPage(device, data.page);
+        // Optional: still attempt Elgato profile switch for seed profile install.
+        if (data.profile) {
+          sendSwitchToProfile(device, data.profile, data.page);
+        }
+      }
       sendToGex({ type: "command_ack", command: command, ok: true, keys: n, page: data.page });
       break;
     }

@@ -4107,16 +4107,19 @@ class GremlinUi(gremlin.ui.ui_common.QRememberMainWindow):
 
                                 # widget.select_item(index)
                                 widget.setContentWidget(input_type, input_id)
+                                # Stream Deck / designer tabs hide the classic list and may
+                                # leave inputItemListView as None — skip list-view selection.
                                 list_view = widget.inputItemListView
-                                input_item_widget = list_view.widget(index)
-                                if input_item_widget:
-                                    if not input_item_widget.selected:
-                                        input_item_widget.setSelected(True, emit=False)
-                                        # ensure the item is visible
-                                if self._input_highlighting_enabled:
-                                    list_view.scrollToInput(input_item)
+                                if list_view is not None and index is not None and index >= 0:
+                                    input_item_widget = list_view.widget(index)
+                                    if input_item_widget:
+                                        if not input_item_widget.selected:
+                                            input_item_widget.setSelected(True, emit=False)
+                                            # ensure the item is visible
+                                    if self._input_highlighting_enabled:
+                                        list_view.scrollToInput(input_item)
 
-                                    # input_widget.ensureStyle()
+                                        # input_widget.ensureStyle()
 
                                 if verbose:
                                     syslog.info(f"SELECT INPUT: selected widget {input_type.name} {input_id}")

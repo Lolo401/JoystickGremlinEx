@@ -1,0 +1,35 @@
+<!DOCTYPE HTML>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>JG Ex Plugin - Configuration</title>
+  <link rel="stylesheet" href="config.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="text">Joystick Gremlin Ex — Plugin Configuration</div>
+  </div>
+  <div class="wrap">
+    <div class="section">
+      <div class="content-heading">Bridge connection</div>
+      <p>
+        The plugin connects to Joystick Gremlin Ex over a localhost WebSocket.
+        Enable <b>Stream Deck bridge</b> in GremlinEx Options → OSC/MIDI.
+      </p>
+      <div class="sdpi-item">
+        <div class="sdpi-item-label">GEX host</div>
+        <input class="sdpi-item-value" id="host" type="text" value="127.0.0.1" />
+      </div>
+      <div class="sdpi-item">
+        <div class="sdpi-item-label">Bridge port</div>
+        <input class="sdpi-item-value" id="port" type="number" value="9020" min="4096" max="65535" />
+      </div>
+      <div class="field-hint">Default port is <b>9020</b>.</div>
+      <div class="sdpi-item">
+        <button class="sdpi-item-value" id="save" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+  <script src="config.js"></script>
+</body>
+</html>

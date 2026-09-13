@@ -405,9 +405,18 @@ class CodeRunner:
                 for container in input_item.containers:
                     if not container.is_valid():
                         # test = container.is_valid()
-                        syslog.warning(f"CALLBACK: device: {device_name}: input: {input_item.display_name}: warning: Incomplete container ignored")
+                        syslog.warning(
+                            f"CALLBACK: device: State: input: {input_item.display_name}: "
+                            f"warning: Incomplete container ignored "
+                            f"(id={getattr(container, 'id', '?')})"
+                        )
                         continue
                     callbacks.extend(container.generate_callbacks())
+                if callbacks:
+                    syslog.info(
+                        f"CALLBACK: State [{key}]: registered {len(callbacks)} "
+                        f"container callback(s)"
+                    )
                 for cb_data in callbacks:
                     event = gremlin.event_handler.Event(
                         event_type=InputType.State, device_guid=state_device_guid, identifier=input_item.input_id, extra_data={"input_item": input_item}

@@ -10300,8 +10300,29 @@ class QSplitTabWidget(QDataWidget):
         self._left_panel_layout.addWidget(self._left_container_widget)
         self._right_panel_layout.addWidget(self._right_container_widget)
 
+        # Right pane: allow the splitter to shrink freely; wide mapping toolbars
+        # and action rows scroll horizontally instead of dictating pane min width.
+        self._right_scroll_area = QtWidgets.QScrollArea()
+        self._right_scroll_area.setObjectName("QSplitTabRightScroll")
+        self._right_scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._right_scroll_area.setWidgetResizable(True)
+        self._right_scroll_area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._right_scroll_area.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        # Scroll viewport may shrink; content keeps its minimumSizeHint so an
+        # H-scrollbar appears instead of crushing the mapping toolbar.
+        self._right_scroll_area.setMinimumWidth(0)
+        self._right_scroll_area.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self._right_scroll_area.setWidget(self._right_panel_widget)
+
         self._splitter.addWidget(self._left_panel_widget)
-        self._splitter.addWidget(self._right_panel_widget)
+        self._splitter.addWidget(self._right_scroll_area)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 4)
 
@@ -10405,8 +10426,23 @@ class QSplitTabWidget(QDataWidget):
         # resize the splitter to the container's size as it doesn't happen by itself for some reason
         # width = self._content_widget.frameGeometry().width()
         # height = self._content_widget.frameGeometry().height()
+        if width <= 0 or height <= 0:
+            return
         self._splitter.setFixedWidth(width)
         self._splitter.setFixedHeight(height)
+        # When pane minimums exceed the tab width, QSplitter grows past the fixed
+        # size and paints over siblings (bad on Stream Deck / narrow windows).
+        sizes = self._splitter.sizes()
+        if len(sizes) >= 2:
+            total = sum(sizes)
+            if total > width:
+                left = max(60, int(sizes[0] * width / max(1, total)))
+                right = max(60, width - left)
+                if left + right > width:
+                    left = max(40, width // 2)
+                    right = max(40, width - left)
+                self._splitter.setSizes([left, right])
+                self._last_sizes = [left, right]
 
     @property
     def rightPanelLocked(self) -> bool:

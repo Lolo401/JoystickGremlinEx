@@ -9430,7 +9430,7 @@ class ContainerView(AbstractView):
 
         # Configure the widget holding the layout with all the buttons
         self._scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         self._scroll_widget, self._scroll_layout = gremlin.ui.ui_common.getVContainer()
         self._scroll_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -10343,8 +10343,8 @@ class InputItemMappingWidget(QtWidgets.QWidget):
 
         self.dropdown_widget, self.dropdown_layout = gremlin.ui.ui_common.getHContainer(widgets)
         layout.addWidget(self.dropdown_widget)
-        desired_width = self.dropdown_widget.sizeHint().width()
-        self.dropdown_widget.setMinimumWidth(desired_width)
+        # Do not lock minimumWidth to sizeHint — that forced the right splitter
+        # pane (and Stream Deck designer) to stay wide. Narrow panes H-scroll.
 
     def _sync_list(self):
         input_item = self._input_item
