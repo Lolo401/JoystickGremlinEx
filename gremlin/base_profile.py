@@ -3424,6 +3424,8 @@ class Profile:
             return len(plugins) > 0
         elif device_guid == gremlin.shared_state.overlay_tab_guid:
             return True
+        elif device_guid == gremlin.shared_state.afcs_tab_guid:
+            return True
         elif device_guid == gremlin.shared_state.keyboard_tab_guid:
             look_for_containers = False
 
@@ -3775,13 +3777,16 @@ class Profile:
 
         node.name = new_mode
 
-        # mode device objects
+        # mode device objects — ProfileModeNode.id is unchanged; only the name moves
         mode: ProfileModeNode
         for device in self.devices.values():
             for mode in device.modes.values():
                 if mode.name == old_mode:
                     # if verbose: syslog.info(f"PROFILE: rename [{old_mode}] to [{new_mode}]")
                     mode.name = new_mode
+
+        el = gremlin.event_handler.EventListener()
+        el.mode_name_changed.emit(old_mode, new_mode)
 
         return True
 
@@ -4843,6 +4848,12 @@ class Profile:
                     import gremlin.ui.obs_overlay as obs_overlay
 
                     obs_overlay.persist_for_profile(self, dest_xml=use_name)
+                except Exception:
+                    pass
+                try:
+                    import gremlin.ui.afcs as afcs
+
+                    afcs.persist_for_profile(self, dest_xml=use_name)
                 except Exception:
                     pass
                 # Stream Deck page names live in the sidecar JSON, not the XML.
