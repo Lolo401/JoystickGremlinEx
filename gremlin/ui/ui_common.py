@@ -16209,6 +16209,8 @@ class AutoHideStackedWidget(QtWidgets.QStackedWidget):
 
     def setWidget(self, widget: QWidget | None) -> None:
         """Replace the current content widget."""
+        if not Shiboken.isValid(self):
+            return
         if widget is self._widget:
             self.refreshSize()
             return
@@ -16558,6 +16560,8 @@ class AutohideContainerIdWidget(QtWidgets.QStackedWidget):
 
     def setWidget(self, widget: QWidget):
         """sets the widget to be displayed"""
+        if not Shiboken.isValid(self):
+            return
         if self._widget is not None and Shiboken.isValid(self._widget):
             self.removeWidget(self._widget)
         if widget is not None and not Shiboken.isValid(widget):
