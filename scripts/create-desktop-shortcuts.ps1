@@ -23,14 +23,24 @@ function New-GexShortcut {
         [Parameter(Mandatory)][string]$Description
     )
     $launcher = Join-Path $Root 'launch-gex.cmd'
-    if (-not (Test-Path $launcher)) {
-        Write-Warning "Launcher missing: $launcher — create the worktree first, then re-run."
+    $py = Join-Path $Root 'gremlinEx.py'
+    if (-not (Test-Path $Root)) {
+        Write-Warning "Worktree missing: $Root — create it first, then re-run."
         return
     }
     $lnkPath = Join-Path $Desktop "$Name.lnk"
     $sc = $wsh.CreateShortcut($lnkPath)
-    $sc.TargetPath = $launcher
-    $sc.WorkingDirectory = $Root
+    if (Test-Path $launcher) {
+        $sc.TargetPath = $launcher
+        $sc.WorkingDirectory = $Root
+    } elseif (Test-Path $py) {
+        $sc.TargetPath = 'python'
+        $sc.Arguments = 'gremlinEx.py'
+        $sc.WorkingDirectory = $Root
+    } else {
+        Write-Warning "No launcher or gremlinEx.py under $Root"
+        return
+    }
     $sc.WindowStyle = 1
     $sc.Description = $Description
     $icon = Join-Path $Root 'gremlinex.png'

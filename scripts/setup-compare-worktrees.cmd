@@ -32,6 +32,19 @@ if errorlevel 1 (
   echo lolo worktree already registered
 )
 
+
+REM Ensure launchers exist in both worktrees (muchimi stays branch-clean vs upstream)
+for %%D in ("%GEX_ROOT%\muchimi-experimental" "%GEX_ROOT%\lolo") do (
+  if exist %%~D\ (
+    if not exist "%%~D\launch-gex.cmd" (
+      > "%%~D\launch-gex.cmd" echo @echo off
+      >>"%%~D\launch-gex.cmd" echo setlocal
+      >>"%%~D\launch-gex.cmd" echo cd /d "%%~dp0"
+      >>"%%~D\launch-gex.cmd" echo if exist ".venv\Scripts\python.exe" (".venv\Scripts\python.exe" gremlinEx.py %%*) else if exist "venv\Scripts\python.exe" ("venv\Scripts\python.exe" gremlinEx.py %%*) else (python gremlinEx.py %%*)
+    )
+  )
+)
+
 echo.
 echo Worktrees:
 git worktree list
